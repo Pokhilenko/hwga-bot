@@ -15,7 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 
-QUESTION = "Хотим сосать"
+QUESTION = "Хотим сасать"
 OPTIONS = ["Конечно, нахуй, да", "А когда не сосать?"]
 
 scheduled_jobs = []
