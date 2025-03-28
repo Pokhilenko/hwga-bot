@@ -1,3 +1,3 @@
 Feci quod potui faciant meliora potentes
 
-Bot link: @hwga_sausage_bot
+Bot link: [https://t.me/hwga_sausage_bot](https://t.me/hwga_sausage_bot)
