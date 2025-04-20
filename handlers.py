@@ -1,19 +1,31 @@
 import asyncio
 import logging
 import random
+import string
 from datetime import datetime, timedelta
 import re
+import os
 
 from telegram import BotCommand, BotCommandScopeDefault, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
+from telegram.ext import ConversationHandler
 
 import db
 import scheduler
 import web_server
+import steam
 from poll_state import poll_state
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Состояния для верификации Steam аккаунта
+STEAM_VERIFICATION_WAITING = 1
+STEAM_VERIFICATION_COMPLETE = 2
+
+# Словарь для хранения информации о верификации пользователей
+# {user_id: {'steam_id': '123', 'verification_code': 'ABC123', 'profile_url': 'url'}}
+verification_data = {}
 
 # Bot configuration
 POLL_QUESTION = "Хатим сасать!?!?!"
@@ -70,6 +82,7 @@ async def start(update, context):
         "/status - проверить статус текущего опроса\n"
         "/stop_poll - остановить текущий опрос\n"
         "/link_steam - привязать Steam ID\n"
+        "/unlink_steam - отвязать Steam ID\n"
         "/stats - статистика опросов\n"
         "/register_me - зарегистрироваться\n"
         "/set_poll_time - установить время опроса (ЧЧ:ММ)"
@@ -327,6 +340,7 @@ async def link_steam_command(update, context):
     chat_id = str(update.effective_chat.id)
     args = context.args
     user = update.effective_user
+    user_id = str(user.id)
     
     # Обновляем название чата
     await update_chat_name(update, chat_id)
@@ -342,7 +356,11 @@ async def link_steam_command(update, context):
     if not args or len(args) != 1:
         await update.message.reply_text(
             "Пожалуйста, укажите свой Steam ID.\n"
-            "Пример: /link_steam 76561198012345678"
+            "Пример: /link_steam 76561198012345678\n\n"
+            "Чтобы найти свой Steam ID:\n"
+            "1. Откройте свой профиль Steam\n"
+            "2. Скопируйте число из URL (после /profiles/)\n"
+            "3. Или используйте сервис https://steamid.io/"
         )
         return
 
@@ -350,16 +368,304 @@ async def link_steam_command(update, context):
 
     # Validate Steam ID (basic check)
     if not steam_id.isdigit() or len(steam_id) < 10:
-        await update.message.reply_text("Неверный формат Steam ID.")
+        await update.message.reply_text("Неверный формат Steam ID. ID должен быть числом не менее 10 цифр.")
         return
+    
+    # Получаем API ключ Steam из переменных окружения
+    steam_api_key = os.environ.get("STEAM_API_KEY")
+    if not steam_api_key:
+        logger.error("Steam API key not set in environment variables")
+        await update.message.reply_text("Ошибка конфигурации бота: отсутствует ключ Steam API.")
+        return
+    
+    # Верификация Steam ID через API
+    profile_data = await steam.verify_steam_id(steam_id, steam_api_key)
+    
+    if not profile_data:
+        await update.message.reply_text(
+            "Не удалось верифицировать Steam ID. Убедитесь, что ID правильный и профиль доступен."
+        )
+        return
+    
+    # Профиль найден, начинаем процесс расширенной верификации
+    # Генерируем уникальный код верификации
+    verification_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    
+    # Сохраняем данные для верификации
+    verification_data[user_id] = {
+        'steam_id': steam_id,
+        'verification_code': verification_code,
+        'profile_url': profile_data['profile_url'],
+        'username': profile_data['username']
+    }
+    
+    # Отправляем инструкции пользователю
+    message_text = (
+        f"🔍 <b>Требуется верификация владения Steam аккаунтом</b>\n\n"
+        f"Для подтверждения, что именно вы владеете Steam аккаунтом <b>{profile_data['username']}</b>, "
+        f"необходимо временно изменить ваше имя в Steam, добавив следующий код:\n\n"
+        f"<code>{verification_code}</code>\n\n"
+        f"<b>Инструкция:</b>\n"
+        f"1. Откройте ваш Steam профиль\n"
+        f"2. Нажмите \"Редактировать профиль\"\n"
+        f"3. Добавьте код <code>{verification_code}</code> к вашему имени\n"
+        f"4. Сохраните изменения\n"
+        f"5. Вернитесь сюда и нажмите кнопку \"Проверить\" ниже\n\n"
+        f"После успешной верификации вы можете вернуть исходное имя."
+    )
+    
+    # Создаем кнопки для действий
+    keyboard = [
+        [InlineKeyboardButton("Открыть Steam профиль", url=profile_data['profile_url'])],
+        [InlineKeyboardButton("Проверить", callback_data=f"verify_steam:{user_id}")],
+        [InlineKeyboardButton("Отмена", callback_data=f"cancel_steam:{user_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
+    
+    logger.info(f"Started Steam verification process for user {user.first_name} ({user_id}) with code {verification_code}")
+    return STEAM_VERIFICATION_WAITING
 
-    # Store in database
-    success = await db.update_user_steam_id(user.id, steam_id)
+async def check_steam_verification(update, context):
+    """Проверяет код верификации в профиле Steam."""
+    query = update.callback_query
+    await query.answer()
+    
+    callback_data = query.data
+    user_id = callback_data.split(':')[1]
+    current_user_id = str(query.from_user.id)
+    
+    # Проверяем, что кнопку нажал именно тот пользователь, который начал верификацию
+    if user_id != current_user_id:
+        await query.edit_message_text(
+            "Ошибка: эта кнопка предназначена для другого пользователя."
+        )
+        return ConversationHandler.END
+    
+    # Проверяем наличие данных верификации
+    if user_id not in verification_data:
+        await query.edit_message_text(
+            "Ошибка: данные верификации не найдены или устарели. Пожалуйста, начните процесс заново с команды /link_steam."
+        )
+        return ConversationHandler.END
+    
+    # Получаем данные верификации
+    verification = verification_data[user_id]
+    steam_id = verification['steam_id']
+    verification_code = verification['verification_code']
+    original_username = verification['username']
+    
+    # Получаем API ключ Steam
+    steam_api_key = os.environ.get("STEAM_API_KEY")
+    
+    # Проверяем наличие кода в имени пользователя
+    is_verified = await steam.check_verification_code(steam_id, verification_code, steam_api_key)
+    
+    if is_verified:
+        # Верификация успешна, сохраняем Steam ID в базе данных
+        success = await db.update_user_steam_id(int(user_id), steam_id)
+        
+        if success:
+            # Получаем обновленную информацию о профиле
+            profile_data = await steam.verify_steam_id(steam_id, steam_api_key)
+            
+            if profile_data:
+                steam_name = profile_data['username']
+                profile_url = profile_data['profile_url']
+                visibility = "публичный" if profile_data['visibility'] == 3 else "приватный"
+                status = "онлайн" if profile_data['status'] == 1 else "оффлайн"
+                
+                message_text = (
+                    f"✅ <b>Верификация успешно завершена!</b>\n\n"
+                    f"Steam ID <code>{steam_id}</code> успешно привязан к вашему аккаунту.\n\n"
+                    f"<b>Информация о профиле:</b>\n"
+                    f"Имя в Steam: {steam_name}\n"
+                    f"Статус: {status}\n"
+                    f"Видимость профиля: {visibility}\n\n"
+                    f"Теперь вы можете вернуть исходное имя в Steam профиле.\n"
+                    f"Бот будет отслеживать ваш статус игры в Dota 2."
+                )
+                
+                # Обновляем сообщение с результатом верификации
+                keyboard = [[InlineKeyboardButton("Открыть Steam профиль", url=profile_url)]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
+                logger.info(f"User {query.from_user.first_name} ({user_id}) successfully verified Steam ID {steam_id}")
+            else:
+                await query.edit_message_text(
+                    "✅ Steam ID успешно верифицирован и привязан к вашему аккаунту, "
+                    "но произошла ошибка при получении информации о профиле."
+                )
+        else:
+            await query.edit_message_text(
+                "Верификация прошла успешно, но произошла ошибка при сохранении Steam ID. "
+                "Пожалуйста, попробуйте позже."
+            )
+        
+        # Удаляем данные верификации
+        if user_id in verification_data:
+            del verification_data[user_id]
+        
+        return STEAM_VERIFICATION_COMPLETE
+    else:
+        # Верификация не удалась, предлагаем попробовать снова
+        message_text = (
+            f"❌ <b>Верификация не удалась</b>\n\n"
+            f"Код <code>{verification_code}</code> не найден в имени вашего Steam профиля.\n\n"
+            f"Убедитесь, что:\n"
+            f"- Вы добавили код <code>{verification_code}</code> в имя профиля\n"
+            f"- Вы сохранили изменения\n"
+            f"- Прошло достаточно времени для обновления данных (до 1 минуты)\n\n"
+            f"Исходное имя профиля: <b>{original_username}</b>"
+        )
+        
+        # Обновляем сообщение с ошибкой верификации
+        keyboard = [
+            [InlineKeyboardButton("Открыть Steam профиль", url=verification['profile_url'])],
+            [InlineKeyboardButton("Проверить снова", callback_data=f"verify_steam:{user_id}")],
+            [InlineKeyboardButton("Отмена", callback_data=f"cancel_steam:{user_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
+        logger.info(f"Verification failed for user {query.from_user.first_name} ({user_id}): code not found in Steam name")
+        
+        return STEAM_VERIFICATION_WAITING
+
+async def cancel_steam_verification(update, context):
+    """Отменяет процесс верификации Steam ID."""
+    query = update.callback_query
+    await query.answer()
+    
+    callback_data = query.data
+    user_id = callback_data.split(':')[1]
+    
+    # Удаляем данные верификации
+    if user_id in verification_data:
+        del verification_data[user_id]
+    
+    await query.edit_message_text(
+        "❌ Верификация Steam ID отменена. Вы можете начать процесс заново с помощью команды /link_steam."
+    )
+    
+    logger.info(f"User {query.from_user.first_name} ({user_id}) canceled Steam verification")
+    return ConversationHandler.END
+
+async def unlink_steam_command(update, context):
+    """Отвязывает Steam ID от аккаунта пользователя."""
+    user = update.effective_user
+    user_id = user.id
+    chat_id = str(update.effective_chat.id)
+    
+    # Обновляем название чата
+    await update_chat_name(update, chat_id)
+    
+    # Получаем информацию о пользователе
+    user_info = await db.get_user_info(user_id)
+    
+    if not user_info or not user_info['steam_id']:
+        await update.message.reply_text(
+            "У вас нет привязанного Steam ID. Чтобы привязать аккаунт, используйте команду /link_steam."
+        )
+        return
+    
+    # Показываем информацию о текущем Steam аккаунте
+    steam_id = user_info['steam_id']
+    
+    # Создаем кнопки для подтверждения отвязки
+    keyboard = [
+        [InlineKeyboardButton("Да, отвязать", callback_data=f"unlink_confirm:{user_id}")],
+        [InlineKeyboardButton("Отмена", callback_data=f"unlink_cancel:{user_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Получаем API ключ Steam из переменных окружения
+    steam_api_key = os.environ.get("STEAM_API_KEY")
+    
+    if steam_api_key:
+        # Получаем информацию о профиле для отображения
+        profile_data = await steam.verify_steam_id(steam_id, steam_api_key)
+        
+        if profile_data:
+            steam_name = profile_data['username']
+            profile_url = profile_data['profile_url']
+            
+            message_text = (
+                f"🔄 <b>Отвязка Steam аккаунта</b>\n\n"
+                f"Вы действительно хотите отвязать свой Steam аккаунт?\n\n"
+                f"<b>Текущий аккаунт:</b>\n"
+                f"Steam ID: <code>{steam_id}</code>\n"
+                f"Имя: {steam_name}\n\n"
+                f"После отвязки бот не будет отслеживать ваш статус в Dota 2."
+            )
+            
+            # Добавляем кнопку перехода в профиль
+            keyboard.insert(0, [InlineKeyboardButton("Просмотреть профиль", url=profile_url)])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+        else:
+            message_text = (
+                f"🔄 <b>Отвязка Steam аккаунта</b>\n\n"
+                f"Вы действительно хотите отвязать свой Steam аккаунт (ID: <code>{steam_id}</code>)?\n\n"
+                f"После отвязки бот не будет отслеживать ваш статус в Dota 2."
+            )
+    else:
+        message_text = (
+            f"🔄 <b>Отвязка Steam аккаунта</b>\n\n"
+            f"Вы действительно хотите отвязать свой Steam аккаунт (ID: <code>{steam_id}</code>)?\n\n"
+            f"После отвязки бот не будет отслеживать ваш статус в Dota 2."
+        )
+    
+    await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
+    logger.info(f"User {user.first_name} ({user_id}) requested to unlink Steam ID {steam_id}")
+
+async def handle_unlink_steam_confirm(update, context):
+    """Обрабатывает подтверждение отвязки Steam ID."""
+    query = update.callback_query
+    await query.answer()
+    
+    callback_data = query.data
+    user_id = int(callback_data.split(':')[1])
+    current_user_id = query.from_user.id
+    
+    # Проверяем, что кнопку нажал именно тот пользователь, который запросил отвязку
+    if user_id != current_user_id:
+        await query.edit_message_text(
+            "Ошибка: эта кнопка предназначена для другого пользователя."
+        )
+        return
+    
+    # Отвязываем Steam ID
+    success = await db.remove_user_steam_id(user_id)
     
     if success:
-        await update.message.reply_text(f"Steam ID {steam_id} успешно привязан к вашему аккаунту.")
+        await query.edit_message_text(
+            "✅ Ваш Steam аккаунт успешно отвязан.\n\n"
+            "Теперь бот не будет отслеживать ваш статус в Dota 2.\n"
+            "Вы можете привязать другой аккаунт с помощью команды /link_steam.",
+            parse_mode='HTML'
+        )
+        logger.info(f"User {query.from_user.first_name} ({user_id}) unlinked their Steam ID")
     else:
-        await update.message.reply_text("Произошла ошибка при привязке Steam ID. Попробуйте позже.")
+        await query.edit_message_text(
+            "❌ Произошла ошибка при отвязке Steam аккаунта. Пожалуйста, попробуйте позже."
+        )
+        logger.error(f"Error unlinking Steam ID for user {user_id}")
+
+async def handle_unlink_steam_cancel(update, context):
+    """Обрабатывает отмену отвязки Steam ID."""
+    query = update.callback_query
+    await query.answer()
+    
+    callback_data = query.data
+    user_id = callback_data.split(':')[1]
+    
+    await query.edit_message_text(
+        "❌ Отвязка Steam аккаунта отменена. Ваш аккаунт остается привязанным."
+    )
+    
+    logger.info(f"User {query.from_user.first_name} ({user_id}) canceled unlinking Steam ID")
 
 async def handle_poll_answer(update, context):
     """Handle when a user answers the poll."""
@@ -543,7 +849,7 @@ async def process_poll_results(chat_id, context):
     elif not categories["accepted"] and not categories["declined"] and not categories["deferred"]:
         result_message = "Сегодня никто не хочет сасать, даешь отдых глотке!"
     elif not categories["accepted"] and not categories["declined"] and categories["deferred"]:
-        result_message = f"Пока что никто не готов сасать, повторим опрос через {deferred_delay} минут"
+        result_message = f"Пока что никто не готов сасать, предлагали подождать {deferred_delay} минут"
     else:
         result_message = ""
         if categories["accepted"]:
@@ -578,13 +884,6 @@ async def process_poll_results(chat_id, context):
     # Close the poll in our state
     await poll_state.close_poll(chat_id)
 
-    # Schedule a new poll if needed
-    if deferred_delay is not None:
-        delay_task = context.application.create_task(
-            schedule_new_poll(chat_id, context, deferred_delay * 60)
-        )
-        poll_state.set_task(chat_id, delay_task)
-
 async def schedule_new_poll(chat_id, context, delay):
     """Schedule a new poll after the specified delay."""
     await asyncio.sleep(delay)
@@ -597,6 +896,7 @@ async def setup_commands(application):
         BotCommand("status", "Проверить статус текущего опроса"),
         BotCommand("stop_poll", "Остановить текущий опрос"),
         BotCommand("link_steam", "Привязать Steam ID"),
+        BotCommand("unlink_steam", "Отвязать Steam ID"),
         BotCommand("stats", "Статистика опросов"),
         BotCommand("register_me", "Зарегистрироваться"),
         BotCommand("set_poll_time", "Установить время опроса (ЧЧ:ММ)")

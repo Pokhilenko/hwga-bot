@@ -10,6 +10,99 @@ from poll_state import poll_state
 # Configure logging
 logger = logging.getLogger(__name__)
 
+async def verify_steam_id(steam_id, steam_api_key):
+    """
+    Проверяет существование и доступность Steam ID через Steam Web API.
+    Возвращает информацию о профиле если ID валидный, иначе None.
+    """
+    if not steam_api_key:
+        logger.warning("Steam API key not set, cannot verify Steam ID")
+        return None
+    
+    try:
+        # Create SSL context with certificate verification disabled
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+            url = f"https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key={steam_api_key}&steamids={steam_id}"
+            logger.info(f"Verifying Steam ID: {steam_id}")
+            
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logger.warning(f"Steam API returned status {response.status}")
+                    return None
+                
+                data = await response.json()
+                players = data.get('response', {}).get('players', [])
+                
+                if not players:
+                    logger.warning(f"No player found with Steam ID: {steam_id}")
+                    return None
+                
+                player_info = players[0]
+                profile_data = {
+                    'steam_id': player_info.get('steamid'),
+                    'username': player_info.get('personaname', 'Unknown'),
+                    'profile_url': player_info.get('profileurl', ''),
+                    'avatar': player_info.get('avatar', ''),
+                    'status': player_info.get('personastate', 0),  # 0 = offline, 1 = online
+                    'real_name': player_info.get('realname', ''),
+                    'visibility': player_info.get('communityvisibilitystate', 1),  # 1 = private, 3 = public
+                }
+                
+                logger.info(f"Successfully verified Steam ID: {steam_id}, username: {profile_data['username']}")
+                return profile_data
+    except Exception as e:
+        logger.error(f"Error verifying Steam ID {steam_id}: {e}")
+        return None
+
+async def check_verification_code(steam_id, verification_code, steam_api_key):
+    """
+    Проверяет наличие кода верификации в имени пользователя Steam.
+    Возвращает True, если код найден, иначе False.
+    """
+    if not steam_api_key:
+        logger.warning("Steam API key not set, cannot check verification code")
+        return False
+    
+    try:
+        # Create SSL context with certificate verification disabled
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+            url = f"https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key={steam_api_key}&steamids={steam_id}"
+            logger.info(f"Checking verification code for Steam ID: {steam_id}")
+            
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logger.warning(f"Steam API returned status {response.status}")
+                    return False
+                
+                data = await response.json()
+                players = data.get('response', {}).get('players', [])
+                
+                if not players:
+                    logger.warning(f"No player found with Steam ID: {steam_id}")
+                    return False
+                
+                player_info = players[0]
+                username = player_info.get('personaname', '')
+                
+                # Проверяем, содержится ли код верификации в имени пользователя
+                if verification_code in username:
+                    logger.info(f"Verification code '{verification_code}' found in username '{username}'")
+                    return True
+                else:
+                    logger.info(f"Verification code '{verification_code}' NOT found in username '{username}'")
+                    return False
+    except Exception as e:
+        logger.error(f"Error checking verification code for Steam ID {steam_id}: {e}")
+        return False
+
 async def check_steam_status(context, steam_api_key, send_poll_func):
     """Check if users are playing Dota 2 and notify the chat."""
     if not steam_api_key:

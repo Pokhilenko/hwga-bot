@@ -326,6 +326,25 @@ async def update_user_steam_id(user_id, steam_id):
             
         return success
 
+async def remove_user_steam_id(user_id):
+    """Удаляет Steam ID пользователя из базы данных"""
+    async with db_semaphore:
+        success = False
+        try:
+            with safe_db_connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                UPDATE users SET steam_id = NULL WHERE telegram_id = ?
+                """, (user_id,))
+                
+                conn.commit()
+                success = True
+                logger.info(f"Removed Steam ID for user {user_id}")
+        except Exception as e:
+            log_error_with_link("Database error in remove_user_steam_id", e)
+            
+        return success
+
 async def get_poll_stats(chat_id, poll_options):
     """Get poll statistics for a chat"""
     async with db_semaphore:
