@@ -337,12 +337,42 @@ async def link_steam_command(update, context):
     user = update.effective_user
     chat = update.effective_chat
     message = update.message
+    chat_id = str(chat.id)
+    
+    # Обновляем название чата
+    await update_chat_name(update, chat_id)
     
     if not await db.is_user_registered(user.id):
         await db.register_user(user)
     
-    # Получаем URL для авторизации через Steam OpenID
-    auth_url = web_server.get_steam_auth_url(user.id)
+    # Проверяем, есть ли уже привязанный Steam ID для этого чата
+    is_linked = await db.is_steam_id_linked_to_chat(user.id, chat_id)
+    
+    if is_linked:
+        # Получаем название чата
+        chat_name = await db.get_chat_name_by_id(chat_id) or "этом чате"
+        
+        # Отправляем сообщение в личку пользователю
+        try:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=f"Твой Steam ID уже зарегистрирован в чате \"{chat_name}\", ничего делать не надо"
+            )
+            # Если это был групповой чат, отправляем уведомление туда
+            if chat.type != 'private':
+                await message.reply_text(
+                    f"Я отправил тебе информацию в личные сообщения, @{user.username or user.first_name}"
+                )
+        except Exception as e:
+            # Если не удалось отправить в личку, отправляем в чат
+            logger.error(f"Error sending private message to {user.id}: {e}")
+            await message.reply_text(
+                f"Твой Steam ID уже зарегистрирован в чате \"{chat_name}\", ничего делать не надо"
+            )
+        return
+    
+    # Получаем URL для авторизации через Steam OpenID с указанием ID чата
+    auth_url = web_server.get_steam_auth_url(user.id, chat_id)
     
     # Создаем сообщение с инлайн-кнопкой для авторизации
     keyboard = [
@@ -350,20 +380,46 @@ async def link_steam_command(update, context):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await message.reply_text(
-        "Для привязки Steam аккаунта, нажмите кнопку ниже и войдите в свой аккаунт Steam. "
-        "После авторизации ваш Steam ID будет автоматически привязан к вашему аккаунту Telegram.\n\n"
-        "Это безопасный способ авторизации, использующий официальный Steam OpenID.",
-        reply_markup=reply_markup
-    )
+    # Отправляем сообщение с инструкциями либо в личку, либо в чат
+    if chat.type == 'private':
+        await message.reply_text(
+            "Для привязки Steam аккаунта, нажмите кнопку ниже и войдите в свой аккаунт Steam. "
+            "После авторизации ваш Steam ID будет автоматически привязан к вашему аккаунту Telegram.\n\n"
+            "Это безопасный способ авторизации, использующий официальный Steam OpenID.",
+            reply_markup=reply_markup
+        )
+    else:
+        # Пробуем отправить в личные сообщения
+        try:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text="Для привязки Steam аккаунта, нажмите кнопку ниже и войдите в свой аккаунт Steam. "
+                "После авторизации ваш Steam ID будет автоматически привязан к вашему аккаунту Telegram.\n\n"
+                "Это безопасный способ авторизации, использующий официальный Steam OpenID.",
+                reply_markup=reply_markup
+            )
+            # Отправляем уведомление в групповой чат
+            await message.reply_text(
+                f"Я отправил тебе инструкции по привязке Steam ID в личные сообщения, @{user.username or user.first_name}"
+            )
+        except Exception as e:
+            # Если не удалось отправить в личку, отправляем в чат
+            logger.error(f"Error sending private message to {user.id}: {e}")
+            await message.reply_text(
+                "Для привязки Steam аккаунта, нажмите кнопку ниже и войдите в свой аккаунт Steam. "
+                "После авторизации ваш Steam ID будет автоматически привязан к вашему аккаунту Telegram.\n\n"
+                "Это безопасный способ авторизации, использующий официальный Steam OpenID.",
+                reply_markup=reply_markup
+            )
     
-    logger.info(f"User {user.id} ({user.username}) requested Steam authentication link")
+    logger.info(f"User {user.id} ({user.username}) requested Steam authentication link for chat {chat_id}")
 
 async def unlink_steam_command(update, context):
     """Отвязывает Steam ID от аккаунта пользователя."""
     user = update.effective_user
     user_id = user.id
-    chat_id = str(update.effective_chat.id)
+    chat = update.effective_chat
+    chat_id = str(chat.id)
     
     # Обновляем название чата
     await update_chat_name(update, chat_id)
@@ -371,24 +427,70 @@ async def unlink_steam_command(update, context):
     # Получаем информацию о пользователе
     user_info = await db.get_user_info(user_id)
     
-    if not user_info or not user_info['steam_id']:
-        await update.message.reply_text(
-            "У вас нет привязанного Steam ID. Чтобы привязать аккаунт, используйте команду /link_steam."
-        )
+    # Проверяем, привязан ли Steam ID к данному чату
+    is_linked = await db.is_steam_id_linked_to_chat(user_id, chat_id)
+    
+    if not is_linked:
+        if chat.type == 'private':
+            await update.message.reply_text(
+                "У вас нет привязанного Steam ID для этого чата. Чтобы привязать аккаунт, используйте команду /link_steam. ВНИМАНИЕ: команду нужно запускать внутри нужного чата, не здесь!!"
+            )
+        else:
+            # Пробуем отправить в личные сообщения
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="У вас нет привязанного Steam ID для этого чата. Чтобы привязать аккаунт, используйте команду /link_steam. ВНИМАНИЕ: команду нужно запускать внутри нужного чата, не здесь!!"
+                )
+                await update.message.reply_text(
+                    f"Я отправил тебе информацию в личные сообщения, @{user.username or user.first_name}"
+                )
+            except Exception as e:
+                logger.error(f"Error sending private message to {user_id}: {e}")
+                await update.message.reply_text(
+                    "У вас нет привязанного Steam ID для этого чата. Чтобы привязать аккаунт, используйте команду /link_steam. ВНИМАНИЕ: команду нужно запускать внутри нужного чата, не здесь!!"
+                )
         return
+    
+    if not user_info or not user_info['steam_id']:
+        if chat.type == 'private':
+            await update.message.reply_text(
+                "У вас нет привязанного Steam ID. Чтобы привязать аккаунт, используйте команду /link_steam. ВНИМАНИЕ: команду нужно запускать внутри нужного чата, не здесь!!"
+            )
+        else:
+            # Пробуем отправить в личные сообщения
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="У вас нет привязанного Steam ID. Чтобы привязать аккаунт, используйте команду /link_steam. ВНИМАНИЕ: команду нужно запускать внутри нужного чата, не здесь!!"
+                )
+                await update.message.reply_text(
+                    f"Я отправил тебе информацию в личные сообщения, @{user.username or user.first_name}"
+                )
+            except Exception as e:
+                logger.error(f"Error sending private message to {user_id}: {e}")
+                await update.message.reply_text(
+                    "У вас нет привязанного Steam ID. Чтобы привязать аккаунт, используйте команду /link_steam. ВНИМАНИЕ: команду нужно запускать внутри нужного чата, не здесь!!"
+                )
+        return
+    
+    # Получаем название чата
+    chat_name = await db.get_chat_name_by_id(chat_id) or "этого чата"
     
     # Показываем информацию о текущем Steam аккаунте
     steam_id = user_info['steam_id']
     
     # Создаем кнопки для подтверждения отвязки
     keyboard = [
-        [InlineKeyboardButton("Да, отвязать", callback_data=f"unlink_confirm:{user_id}")],
-        [InlineKeyboardButton("Отмена", callback_data=f"unlink_cancel:{user_id}")]
+        [InlineKeyboardButton("Да, отвязать", callback_data=f"unlink_confirm:{user_id}:{chat_id}")],
+        [InlineKeyboardButton("Отмена", callback_data=f"unlink_cancel:{user_id}:{chat_id}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     # Получаем API ключ Steam из переменных окружения
     steam_api_key = os.environ.get("STEAM_API_KEY")
+    
+    message_text = ""
     
     if steam_api_key:
         # Получаем информацию о профиле для отображения
@@ -400,11 +502,11 @@ async def unlink_steam_command(update, context):
             
             message_text = (
                 f"🔄 <b>Отвязка Steam аккаунта</b>\n\n"
-                f"Вы действительно хотите отвязать свой Steam аккаунт?\n\n"
+                f"Вы действительно хотите отвязать свой Steam аккаунт от чата \"{chat_name}\"?\n\n"
                 f"<b>Текущий аккаунт:</b>\n"
                 f"Steam ID: <code>{steam_id}</code>\n"
                 f"Имя: {steam_name}\n\n"
-                f"После отвязки бот не будет отслеживать ваш статус в Dota 2."
+                f"После отвязки бот не будет отслеживать ваш статус в Dota 2 для этого чата."
             )
             
             # Добавляем кнопку перехода в профиль
@@ -413,18 +515,36 @@ async def unlink_steam_command(update, context):
         else:
             message_text = (
                 f"🔄 <b>Отвязка Steam аккаунта</b>\n\n"
-                f"Вы действительно хотите отвязать свой Steam аккаунт (ID: <code>{steam_id}</code>)?\n\n"
-                f"После отвязки бот не будет отслеживать ваш статус в Dota 2."
+                f"Вы действительно хотите отвязать свой Steam аккаунт (ID: <code>{steam_id}</code>) от чата \"{chat_name}\"?\n\n"
+                f"После отвязки бот не будет отслеживать ваш статус в Dota 2 для этого чата."
             )
     else:
         message_text = (
             f"🔄 <b>Отвязка Steam аккаунта</b>\n\n"
-            f"Вы действительно хотите отвязать свой Steam аккаунт (ID: <code>{steam_id}</code>)?\n\n"
-            f"После отвязки бот не будет отслеживать ваш статус в Dota 2."
+            f"Вы действительно хотите отвязать свой Steam аккаунт (ID: <code>{steam_id}</code>) от чата \"{chat_name}\"?\n\n"
+            f"После отвязки бот не будет отслеживать ваш статус в Dota 2 для этого чата."
         )
     
-    await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
-    logger.info(f"User {user.first_name} ({user_id}) requested to unlink Steam ID {steam_id}")
+    # Отправляем сообщение с подтверждением в личку или в чат
+    if chat.type == 'private':
+        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
+    else:
+        # Пробуем отправить в личные сообщения
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=message_text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            await update.message.reply_text(
+                f"Я отправил тебе инструкции по отвязке Steam ID в личные сообщения, @{user.username or user.first_name}"
+            )
+        except Exception as e:
+            logger.error(f"Error sending private message to {user_id}: {e}")
+            await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
+    
+    logger.info(f"User {user.first_name} ({user_id}) requested to unlink Steam ID {steam_id} from chat {chat_id}")
 
 async def handle_unlink_steam_confirm(update, context):
     """Обрабатывает подтверждение отвязки Steam ID."""
@@ -432,7 +552,9 @@ async def handle_unlink_steam_confirm(update, context):
     await query.answer()
     
     callback_data = query.data
-    user_id = int(callback_data.split(':')[1])
+    parts = callback_data.split(':')
+    user_id = int(parts[1])
+    chat_id = parts[2] if len(parts) > 2 else None
     current_user_id = query.from_user.id
     
     # Проверяем, что кнопку нажал именно тот пользователь, который запросил отвязку
@@ -442,22 +564,25 @@ async def handle_unlink_steam_confirm(update, context):
         )
         return
     
+    # Получаем название чата
+    chat_name = await db.get_chat_name_by_id(chat_id) if chat_id else "неизвестного чата"
+    
     # Отвязываем Steam ID
-    success = await db.remove_user_steam_id(user_id)
+    success = await db.remove_user_steam_id(user_id, chat_id)
     
     if success:
         await query.edit_message_text(
-            "✅ Ваш Steam аккаунт успешно отвязан.\n\n"
-            "Теперь бот не будет отслеживать ваш статус в Dota 2.\n"
-            "Вы можете привязать другой аккаунт с помощью команды /link_steam.",
+            f"✅ Ваш Steam аккаунт успешно отвязан от чата \"{chat_name}\".\n\n"
+            f"Теперь бот не будет отслеживать ваш статус в Dota 2 для этого чата.\n"
+            f"Вы можете привязать другой аккаунт с помощью команды /link_steam.",
             parse_mode='HTML'
         )
-        logger.info(f"User {query.from_user.first_name} ({user_id}) unlinked their Steam ID")
+        logger.info(f"User {query.from_user.first_name} ({user_id}) unlinked their Steam ID from chat {chat_id}")
     else:
         await query.edit_message_text(
             "❌ Произошла ошибка при отвязке Steam аккаунта. Пожалуйста, попробуйте позже."
         )
-        logger.error(f"Error unlinking Steam ID for user {user_id}")
+        logger.error(f"Error unlinking Steam ID for user {user_id} from chat {chat_id}")
 
 async def handle_unlink_steam_cancel(update, context):
     """Обрабатывает отмену отвязки Steam ID."""
@@ -465,13 +590,15 @@ async def handle_unlink_steam_cancel(update, context):
     await query.answer()
     
     callback_data = query.data
-    user_id = callback_data.split(':')[1]
+    parts = callback_data.split(':')
+    user_id = parts[1]
+    chat_id = parts[2] if len(parts) > 2 else None
     
     await query.edit_message_text(
         "❌ Отвязка Steam аккаунта отменена. Ваш аккаунт остается привязанным."
     )
     
-    logger.info(f"User {query.from_user.first_name} ({user_id}) canceled unlinking Steam ID")
+    logger.info(f"User {query.from_user.first_name} ({user_id}) canceled unlinking Steam ID from chat {chat_id}")
 
 async def handle_poll_answer(update, context):
     """Handle when a user answers the poll."""
