@@ -42,10 +42,8 @@ def main():
     application.add_handler(CommandHandler("register_me", handlers.register_me_command))
     application.add_handler(CommandHandler("set_poll_time", handlers.set_poll_time_command))
     
-    # Обработчики для верификации Steam ID
+    # Обработчик для привязки Steam ID через OpenID
     application.add_handler(CommandHandler("link_steam", handlers.link_steam_command))
-    application.add_handler(CallbackQueryHandler(handlers.check_steam_verification, pattern="^verify_steam:"))
-    application.add_handler(CallbackQueryHandler(handlers.cancel_steam_verification, pattern="^cancel_steam:"))
     
     # Обработчики для отвязки Steam ID
     application.add_handler(CommandHandler("unlink_steam", handlers.unlink_steam_command))
@@ -65,7 +63,7 @@ def main():
     )
     logger.info("Scheduled web server startup")
 
-    # Setup the job queue
+    # Set up the job queue
     application.job_queue.run_once(
         lambda ctx: asyncio.create_task(setup_jobs(application.job_queue, handlers.send_poll, STEAM_API_KEY)),
         0

@@ -1005,14 +1005,7 @@ def get_stats_url(chat_id):
     """Получить URL для статистики"""
     # Используем домен вместо IP-адреса
     host = os.environ.get('DOMAIN_NAME', 'hwga.pokhilen.co')
-    
-    # Если порт не стандартный (443), добавляем его в URL
-    port = int(os.environ.get('PROD_PORT', 443))
-    if port != 443:
-        base_url = f"https://{host}:{port}"
-    else:
-        base_url = f"https://{host}"
-    
+    base_url = f"https://{host}"
     return f"{base_url}/stats/{chat_id}"
 
 async def start_web_server():
@@ -1242,14 +1235,7 @@ def get_base_url():
     """Get the base URL for callbacks"""
     # Используем домен вместо IP-адреса
     host = os.environ.get('DOMAIN_NAME', 'hwga.pokhilen.co')
-    
-    # Если порт не стандартный (443), добавляем его в URL
-    port = int(os.environ.get('PROD_PORT', 443))
-    if port != 443:
-        base_url = f"https://{host}:{port}"
-    else:
-        base_url = f"https://{host}"
-    
+    base_url = f"https://{host}"
     return base_url
 
 async def steam_login_handler(request):
