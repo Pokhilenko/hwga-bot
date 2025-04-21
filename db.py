@@ -47,88 +47,40 @@ def safe_db_connect(timeout=5.0):
 
 def setup_database():
     """Create database tables if they don't exist"""
-    attempts = 5
-    
-    # Проверяем, существует ли файл базы данных
     db_exists = os.path.exists(DB_FILE)
-    create_tables = True
+    create_tables = not db_exists
     
-    # Если файл существует, пробуем подключиться
+    # Проверяем, нужно ли обновить схему базы данных
     if db_exists:
-        logger.info("Database file exists, attempting to connect")
-        while attempts > 0:
-            try:
-                conn = sqlite3.connect(DB_FILE, timeout=20.0)
-                cursor = conn.cursor()
-                
-                # Проверяем, можем ли мы получить доступ к базе данных
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                tables = set(row[0] for row in cursor.fetchall())
-                logger.info(f"Existing tables: {tables}")
-                
-                # Все необходимые таблицы
-                required_tables = {'users', 'polls', 'votes', 'last_activity', 'chat_settings'}
-                
-                # Если есть хотя бы одна таблица, но не все
-                if tables and not required_tables.issubset(tables):
-                    logger.info("Some tables missing, will create them")
-                    create_tables = True
-                elif required_tables.issubset(tables):
-                    logger.info("All required tables exist")
-                    create_tables = False
-                    
-                    # Проверяем структуру таблицы chat_settings
-                    cursor.execute("PRAGMA table_info(chat_settings)")
-                    columns = {row[1] for row in cursor.fetchall()}
-                    
-                    # Если нет столбца chat_name, добавляем его
-                    if 'chat_name' not in columns:
-                        logger.info("Adding chat_name column to chat_settings table")
-                        cursor.execute("""
-                        ALTER TABLE chat_settings ADD COLUMN chat_name TEXT
-                        """)
-                        conn.commit()
-                
-                conn.close()
-                break
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e):
-                    attempts -= 1
-                    logger.warning(f"Database is locked, retrying... {attempts} attempts left")
-                    # Ждем небольшое время перед новой попыткой
-                    time_module.sleep(1)
-                else:
-                    log_error_with_link("Database error during setup", e)
-                    # Пробуем создать новую базу данных
-                    db_exists = False
-                    break
-            except Exception as e:
-                log_error_with_link("Unexpected error during database setup", e)
-                # Пробуем создать новую базу данных
-                db_exists = False
-                break
-            finally:
-                if 'conn' in locals() and conn:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-        
-        # Если не удалось подключиться после всех попыток
-        if attempts == 0:
-            logger.warning("Could not access database after multiple attempts - creating new database")
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
             
-            # Переименовываем старую базу данных
-            try:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                backup_file = f"{DB_FILE}.locked.{timestamp}"
-                os.rename(DB_FILE, backup_file)
-                logger.info(f"Renamed locked database to {backup_file}")
-                db_exists = False
+            # Check for users table
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+            if not cursor.fetchone():
                 create_tables = True
-            except Exception as e:
-                log_error_with_link("Could not rename locked database", e)
-                raise sqlite3.OperationalError("Database is locked and cannot be renamed. Please close all applications using the database.")
+            
+            # Check if last_activity table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='last_activity'")
+            if not cursor.fetchone():
+                create_tables = True
+                
+            # Check if chat_settings table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_settings'")
+            if not cursor.fetchone():
+                create_tables = True
+            
+            # Check if user_steam_chats table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_steam_chats'")
+            if not cursor.fetchone():
+                # Новая таблица с апреля 2025 года - нужно создать
+                create_tables = True
+                
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error checking database schema: {e}")
+            create_tables = True
     
     # Создаем новую базу данных или обновляем существующую
     if not db_exists or create_tables:
@@ -189,15 +141,24 @@ def setup_database():
                 chat_name TEXT
             )
             ''')
+            
+            # New table for tracking Steam IDs by chat
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_steam_chats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id TEXT,
+                steam_id TEXT,
+                chat_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(telegram_id, chat_id)
+            )
+            ''')
 
             conn.commit()
-            logger.info("Database setup completed successfully")
+            conn.close()
+            logger.info("Database tables created or updated successfully")
         except Exception as e:
-            log_error_with_link("Error creating new database", e)
-            raise
-        finally:
-            if 'conn' in locals() and conn:
-                conn.close()
+            logger.error(f"Error creating database tables: {e}")
 
 async def store_user_info(user):
     """Store or update user information in the database"""
@@ -279,19 +240,30 @@ async def get_steam_users():
         try:
             with safe_db_connect() as conn:
                 cursor = conn.cursor()
-                # Get all users with Steam IDs
+                # Получаем пользователей из таблицы связей Steam ID с чатами
                 cursor.execute('''
-                SELECT DISTINCT u.telegram_id, u.steam_id, u.first_name, p.chat_id 
-                FROM users u
-                JOIN polls p ON EXISTS (
-                    SELECT 1 FROM votes v 
-                    WHERE v.poll_id = p.id AND v.user_id = u.telegram_id
-                )
-                WHERE u.steam_id IS NOT NULL
-                GROUP BY u.telegram_id, p.chat_id
+                SELECT u.telegram_id, usc.steam_id, u.first_name, usc.chat_id 
+                FROM user_steam_chats usc
+                JOIN users u ON usc.telegram_id = u.telegram_id
+                WHERE usc.steam_id IS NOT NULL
+                GROUP BY u.telegram_id, usc.chat_id
                 ''')
-
+                
+                # Если в таблице связей пусто, используем старый метод для обратной совместимости
                 steam_users = cursor.fetchall()
+                if not steam_users:
+                    # Legacy query for backward compatibility
+                    cursor.execute('''
+                    SELECT DISTINCT u.telegram_id, u.steam_id, u.first_name, p.chat_id 
+                    FROM users u
+                    JOIN polls p ON EXISTS (
+                        SELECT 1 FROM votes v 
+                        WHERE v.poll_id = p.id AND v.user_id = u.telegram_id
+                    )
+                    WHERE u.steam_id IS NOT NULL
+                    GROUP BY u.telegram_id, p.chat_id
+                    ''')
+                    steam_users = cursor.fetchall()
                 
                 # Get last poll activity by chat
                 cursor.execute('''
@@ -308,16 +280,24 @@ async def get_steam_users():
             
         return result
 
-async def update_user_steam_id(user_id, steam_id):
-    """Update user's Steam ID"""
+async def update_user_steam_id(user_id, steam_id, chat_id=None):
+    """Update user's Steam ID and optionally link it to a specific chat"""
     async with db_semaphore:
         success = False
         try:
             with safe_db_connect() as conn:
                 cursor = conn.cursor()
+                # Update global Steam ID
                 cursor.execute("""
                 UPDATE users SET steam_id = ? WHERE telegram_id = ?
                 """, (steam_id, user_id))
+                
+                # If chat_id provided, link the Steam ID to this chat
+                if chat_id:
+                    cursor.execute("""
+                    INSERT OR REPLACE INTO user_steam_chats (telegram_id, steam_id, chat_id)
+                    VALUES (?, ?, ?)
+                    """, (user_id, steam_id, chat_id))
                 
                 conn.commit()
                 success = True
@@ -326,24 +306,77 @@ async def update_user_steam_id(user_id, steam_id):
             
         return success
 
-async def remove_user_steam_id(user_id):
+async def remove_user_steam_id(user_id, chat_id=None):
     """Удаляет Steam ID пользователя из базы данных"""
     async with db_semaphore:
         success = False
         try:
             with safe_db_connect() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                UPDATE users SET steam_id = NULL WHERE telegram_id = ?
-                """, (user_id,))
+                
+                if chat_id:
+                    # Remove Steam ID only for specific chat
+                    cursor.execute("""
+                    DELETE FROM user_steam_chats WHERE telegram_id = ? AND chat_id = ?
+                    """, (user_id, chat_id))
+                    success = True
+                    logger.info(f"Removed Steam ID for user {user_id} in chat {chat_id}")
+                else:
+                    # Remove from all chats and global Steam ID
+                    cursor.execute("""
+                    DELETE FROM user_steam_chats WHERE telegram_id = ?
+                    """, (user_id,))
+                    
+                    cursor.execute("""
+                    UPDATE users SET steam_id = NULL WHERE telegram_id = ?
+                    """, (user_id,))
+                    
+                    success = True
+                    logger.info(f"Removed Steam ID for user {user_id} from all chats")
                 
                 conn.commit()
-                success = True
-                logger.info(f"Removed Steam ID for user {user_id}")
         except Exception as e:
             log_error_with_link("Database error in remove_user_steam_id", e)
             
         return success
+
+async def is_steam_id_linked_to_chat(user_id, chat_id):
+    """Проверяет, привязан ли Steam ID пользователя к конкретному чату"""
+    async with db_semaphore:
+        is_linked = False
+        try:
+            with safe_db_connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                SELECT 1 FROM user_steam_chats 
+                WHERE telegram_id = ? AND chat_id = ?
+                """, (user_id, chat_id))
+                
+                is_linked = cursor.fetchone() is not None
+        except Exception as e:
+            log_error_with_link("Database error in is_steam_id_linked_to_chat", e)
+            
+        return is_linked
+
+async def get_chat_name_by_id(chat_id):
+    """Получить название чата по его ID"""
+    async with db_semaphore:
+        chat_name = None
+        try:
+            with safe_db_connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                SELECT chat_name FROM chat_settings 
+                WHERE chat_id = ?
+                """, (chat_id,))
+                
+                result = cursor.fetchone()
+                if result:
+                    chat_name = result[0]
+        except Exception as e:
+            log_error_with_link("Database error in get_chat_name_by_id", e)
+            
+        return chat_name
 
 async def get_poll_stats(chat_id, poll_options):
     """Get poll statistics for a chat"""

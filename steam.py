@@ -129,6 +129,12 @@ async def check_steam_status(context, steam_api_key, send_poll_func):
             if not chat_id:  # Skip if no chat_id
                 logger.warning(f"Skipping user {first_name} because no chat_id is associated")
                 continue
+            
+            # Проверяем, привязан ли Steam ID конкретно к этому чату
+            is_linked = await db.is_steam_id_linked_to_chat(telegram_id, chat_id)
+            if not is_linked:
+                logger.warning(f"Skipping user {first_name} because Steam ID not linked to chat {chat_id}")
+                continue
                 
             if chat_id not in chat_users:
                 chat_users[chat_id] = []

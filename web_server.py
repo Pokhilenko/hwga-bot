@@ -33,7 +33,7 @@ STEAM_OPENID_URL = 'https://steamcommunity.com/openid/login'
 STEAM_API_KEY = os.environ.get('STEAM_API_KEY', '')
 
 # Хранение временных состояний и связок telegram_id <-> код сессии
-steam_auth_sessions = {}  # session_id -> telegram_id
+steam_auth_sessions = {}  # session_id -> (telegram_id, chat_id)
 telegram_auth_requests = {}  # telegram_id -> session_id
 
 # Database file
@@ -1241,16 +1241,32 @@ def get_base_url():
 async def steam_login_handler(request):
     """Handles the initial Steam login request"""
     telegram_id = request.match_info.get('telegram_id', '')
+    chat_id = request.query.get('chat_id', '')
     
     if not telegram_id:
         return web.Response(text="Не указан ID пользователя Telegram", status=400)
     
     try:
+        # Проверяем, привязан ли уже Steam ID к данному чату
+        if chat_id:
+            is_linked = await db.is_steam_id_linked_to_chat(telegram_id, chat_id)
+            
+            if is_linked:
+                # Получаем информацию о пользователе
+                user_info = await db.get_user_info(telegram_id)
+                if user_info and user_info['steam_id']:
+                    # Получаем название чата
+                    chat_name = await db.get_chat_name_by_id(chat_id) or "неизвестный чат"
+                    
+                    # Перенаправляем на страницу успешной авторизации
+                    redirect_url = f"/auth/steam/success?telegram_id={telegram_id}&steam_id={user_info['steam_id']}&chat_id={chat_id}&already_linked=true"
+                    return web.HTTPFound(redirect_url)
+        
         # Generate a unique session ID
         session_id = secrets.token_hex(16)
         
-        # Store the session mapping
-        steam_auth_sessions[session_id] = telegram_id
+        # Store the session mapping with chat_id
+        steam_auth_sessions[session_id] = (telegram_id, chat_id)
         telegram_auth_requests[telegram_id] = session_id
         
         # Generate Steam OpenID parameters
@@ -1326,10 +1342,18 @@ async def steam_callback_handler(request):
         # Find the associated Telegram ID
         # Since we can't store session in the browser easily for this use case,
         # we'll check all pending authentications to find a match
-        for session_id, telegram_id in list(steam_auth_sessions.items()):
+        for session_id, session_data in list(steam_auth_sessions.items()):
+            telegram_id, chat_id = session_data
+            
             # Update the user's Steam ID in the database
-            await db.update_user_steam_id(telegram_id, steam_id)
-            logger.info(f"Updated Steam ID for Telegram user {telegram_id}: {steam_id}")
+            if chat_id:
+                # Link to specific chat
+                await db.update_user_steam_id(telegram_id, steam_id, chat_id)
+                logger.info(f"Updated Steam ID for Telegram user {telegram_id} in chat {chat_id}: {steam_id}")
+            else:
+                # Just update global Steam ID
+                await db.update_user_steam_id(telegram_id, steam_id)
+                logger.info(f"Updated global Steam ID for Telegram user {telegram_id}: {steam_id}")
             
             # Clean up the auth session
             del steam_auth_sessions[session_id]
@@ -1337,7 +1361,7 @@ async def steam_callback_handler(request):
                 del telegram_auth_requests[telegram_id]
             
             # Redirect to success page showing the steam_id and telegram_id
-            success_url = f"/auth/steam/success?telegram_id={telegram_id}&steam_id={steam_id}"
+            success_url = f"/auth/steam/success?telegram_id={telegram_id}&steam_id={steam_id}&chat_id={chat_id}"
             return web.HTTPFound(success_url)
         
         # If no matching session was found
@@ -1351,6 +1375,27 @@ async def steam_success_handler(request):
     """Shows a success page"""
     telegram_id = request.query.get('telegram_id', '')
     steam_id = request.query.get('steam_id', '')
+    chat_id = request.query.get('chat_id', '')
+    already_linked = request.query.get('already_linked', '') == 'true'
+    
+    chat_name = "неизвестный чат"
+    if chat_id:
+        chat_name_result = await db.get_chat_name_by_id(chat_id)
+        if chat_name_result:
+            chat_name = chat_name_result
+    
+    if already_linked:
+        # Если аккаунт уже был привязан ранее
+        success_message = "Аккаунт Steam уже привязан!"
+        description = f"Ваш аккаунт Steam уже привязан к чату \"{chat_name}\". Вам не нужно привязывать его повторно."
+        icon_color = "#3498db"  # Синий цвет для информационного сообщения
+    else:
+        # Стандартное сообщение для новой привязки
+        success_message = "Аккаунт Steam успешно привязан!"
+        description = f"Вы успешно привязали свой аккаунт Steam к чату \"{chat_name}\". Теперь бот сможет отслеживать, когда вы играете в Dota 2, и автоматически предлагать опрос для вашей группы."
+        icon_color = "#4CAF50"  # Зеленый цвет для успешной привязки
+    
+    chat_info = f" к чату \"{chat_name}\"" if chat_id else ""
     
     html = f"""
     <!DOCTYPE html>
@@ -1358,7 +1403,7 @@ async def steam_success_handler(request):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Успешная привязка Steam ID</title>
+        <title>Привязка Steam ID</title>
         <style>
             body {{
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -1379,11 +1424,11 @@ async def steam_success_handler(request):
             }}
             .success-icon {{
                 font-size: 64px;
-                color: #4CAF50;
+                color: {icon_color};
                 margin-bottom: 20px;
             }}
             h1 {{
-                color: #4CAF50;
+                color: {icon_color};
                 margin-bottom: 20px;
             }}
             p {{
@@ -1415,9 +1460,9 @@ async def steam_success_handler(request):
     </head>
     <body>
         <div class="card">
-            <div class="success-icon">✓</div>
-            <h1>Аккаунт Steam успешно привязан!</h1>
-            <p>Вы успешно привязали свой аккаунт Steam к боту. Теперь бот сможет отслеживать, когда вы играете в Dota 2, и автоматически предлагать опрос для вашей группы.</p>
+            <div class="success-icon">{'ℹ' if already_linked else '✓'}</div>
+            <h1>{success_message}</h1>
+            <p>{description}</p>
             <p>Steam ID:</p>
             <div class="steam-id">{steam_id}</div>
             <p>Можете закрыть эту страницу и вернуться в Telegram.</p>
@@ -1483,6 +1528,10 @@ async def steam_cancel_handler(request):
             .button:hover {
                 background-color: #2a475e;
             }
+            .warning {
+                color: #e74c3c;
+                font-weight: bold;
+            }
         </style>
     </head>
     <body>
@@ -1490,7 +1539,8 @@ async def steam_cancel_handler(request):
             <div class="cancel-icon">✕</div>
             <h1>Привязка отменена</h1>
             <p>Вы отменили привязку аккаунта Steam к боту или произошла ошибка в процессе авторизации.</p>
-            <p>Вы можете попробовать снова в любое время, выполнив команду /link_steam в боте.</p>
+            <p>Вы можете попробовать снова, выполнив команду /link_steam в том чате, где вы хотите использовать бота.</p>
+            <p class="warning">ВАЖНО: Команду /link_steam необходимо запускать внутри нужного группового чата, а не в личных сообщениях с ботом!</p>
             <a href="https://t.me/hwga_sausage_bot" class="button">Вернуться к боту</a>
         </div>
     </body>
@@ -1499,7 +1549,8 @@ async def steam_cancel_handler(request):
     
     return web.Response(text=html, content_type='text/html')
 
-def get_steam_auth_url(telegram_id):
+def get_steam_auth_url(telegram_id, chat_id=None):
     """Получить URL для авторизации через Steam"""
     base_url = get_base_url()
-    return f"{base_url}/auth/steam/login/{telegram_id}"
+    chat_param = f"?chat_id={chat_id}" if chat_id else ""
+    return f"{base_url}/auth/steam/login/{telegram_id}{chat_param}"

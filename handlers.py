@@ -354,9 +354,11 @@ async def link_steam_command(update, context):
         
         # Отправляем сообщение в личку пользователю
         try:
+            # Формируем сообщение без кнопки авторизации
             await context.bot.send_message(
                 chat_id=user.id,
-                text=f"Твой Steam ID уже зарегистрирован в чате \"{chat_name}\", ничего делать не надо"
+                text=f"❌ Ваш Steam ID уже зарегистрирован в чате \"{chat_name}\", ничего делать не надо.\n\n"
+                     f"Если вы хотите отвязать текущий аккаунт и привязать другой, сначала используйте команду /unlink_steam в нужном чате."
             )
             # Если это был групповой чат, отправляем уведомление туда
             if chat.type != 'private':
@@ -367,7 +369,8 @@ async def link_steam_command(update, context):
             # Если не удалось отправить в личку, отправляем в чат
             logger.error(f"Error sending private message to {user.id}: {e}")
             await message.reply_text(
-                f"Твой Steam ID уже зарегистрирован в чате \"{chat_name}\", ничего делать не надо"
+                f"❌ Ваш Steam ID уже зарегистрирован в чате \"{chat_name}\", ничего делать не надо.\n\n"
+                f"Если вы хотите отвязать текущий аккаунт и привязать другой, сначала используйте команду /unlink_steam в нужном чате."
             )
         return
     
