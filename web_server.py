@@ -7,6 +7,10 @@ from aiohttp import web
 import socket
 import sqlite3
 import pathlib
+import secrets
+import re
+import aiohttp
+import ssl
 
 import db
 from db import DB_FILE  # Import DB_FILE constant
@@ -16,13 +20,21 @@ logger = logging.getLogger(__name__)
 
 # Настройки сервера
 DEV_MODE = os.environ.get('BOT_ENV', 'dev') == 'dev'
-DEV_HOST = 'localhost'
-DEV_PORT = 8080
+DEV_HOST = '0.0.0.0'
+DEV_PORT = 8081
 PROD_HOST = os.environ.get('PROD_HOST', socket.gethostbyname(socket.gethostname()))
-PROD_PORT = int(os.environ.get('PROD_PORT', 8080))
+PROD_PORT = int(os.environ.get('PROD_PORT', 8081))
 
 HOST = DEV_HOST if DEV_MODE else PROD_HOST
 PORT = DEV_PORT if DEV_MODE else PROD_PORT
+
+# Steam OpenID configuration
+STEAM_OPENID_URL = 'https://steamcommunity.com/openid/login'
+STEAM_API_KEY = os.environ.get('STEAM_API_KEY', '')
+
+# Хранение временных состояний и связок telegram_id <-> код сессии
+steam_auth_sessions = {}  # session_id -> telegram_id
+telegram_auth_requests = {}  # telegram_id -> session_id
 
 # Database file
 DATABASE = DB_FILE
@@ -991,13 +1003,15 @@ async def get_stats_handler(request):
 
 def get_stats_url(chat_id):
     """Получить URL для статистики"""
-    host = HOST
-    port = PORT
+    # Используем домен вместо IP-адреса
+    host = os.environ.get('DOMAIN_NAME', 'hwga.pokhilen.co')
     
-    # В dev режиме используем localhost, в production используем внешний IP
-    base_url = f"http://{host}"
-    if (DEV_MODE and port != 80) or (not DEV_MODE and port != 80):
-        base_url += f":{port}"
+    # Если порт не стандартный (443), добавляем его в URL
+    port = int(os.environ.get('PROD_PORT', 443))
+    if port != 443:
+        base_url = f"https://{host}:{port}"
+    else:
+        base_url = f"https://{host}"
     
     return f"{base_url}/stats/{chat_id}"
 
@@ -1005,17 +1019,54 @@ async def start_web_server():
     """Запускает веб-сервер"""
     app = web.Application()
     
-    # Маршруты
+    # Маршруты для статистики
     app.router.add_get('/stats/{chat_id}', get_stats_handler)
+    
+    # Маршруты для Steam OpenID авторизации
+    app.router.add_get('/auth/steam/login/{telegram_id}', steam_login_handler)
+    app.router.add_get('/auth/steam/callback', steam_callback_handler)
+    app.router.add_get('/auth/steam/success', steam_success_handler)
+    app.router.add_get('/auth/steam/cancel', steam_cancel_handler)
+    
+    # Тестовый маршрут
+    app.router.add_get('/', lambda request: web.Response(text='HWGA Bot Web Server is running!'))
+    
     app.router.add_static('/static/', path=STATIC_DIR, name='static')
     
     # Запуск сервера
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, HOST, PORT)
-    await site.start()
     
-    logger.info(f"Web server started at http://{HOST}:{PORT}")
+    # Запускаем HTTP сервер на основном порту
+    http_site = web.TCPSite(runner, HOST, PORT)
+    await http_site.start()
+    logger.info(f"HTTP web server started at http://{HOST}:{PORT}")
+    
+    # Пути к SSL сертификатам
+    ssl_cert = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cert', 'cert.pem')
+    ssl_key = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cert', 'key.pem')
+    
+    # Проверяем наличие SSL сертификатов
+    if os.path.exists(ssl_cert) and os.path.exists(ssl_key):
+        # Создаем SSL контекст
+        ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ssl_context.load_cert_chain(ssl_cert, ssl_key)
+        
+        # Запускаем HTTPS сервер на стандартном порту 443
+        try:
+            https_site = web.TCPSite(runner, HOST, 443, ssl_context=ssl_context)
+            await https_site.start()
+            logger.info(f"HTTPS web server started at https://{HOST}")
+        except OSError as e:
+            # Если нет прав на порт 443, пробуем альтернативный порт из env
+            alt_port = int(os.environ.get('PROD_PORT', 8444))
+            logger.warning(f"Failed to start HTTPS server on port 443: {e}. Trying port {alt_port}...")
+            https_site = web.TCPSite(runner, HOST, alt_port, ssl_context=ssl_context)
+            await https_site.start()
+            logger.info(f"HTTPS web server started at https://{HOST}:{alt_port}")
+    else:
+        logger.warning(f"SSL certificates not found at {ssl_cert} and {ssl_key}. HTTPS server not started.")
+    
     return runner
 
 def format_user_votes_table(user_votes_data, poll_options):
@@ -1184,3 +1235,285 @@ def format_time_votes_table(time_votes_data, poll_options):
     """
     
     return html
+
+# Steam OpenID Authentication Handlers
+
+def get_base_url():
+    """Get the base URL for callbacks"""
+    # Используем домен вместо IP-адреса
+    host = os.environ.get('DOMAIN_NAME', 'hwga.pokhilen.co')
+    
+    # Если порт не стандартный (443), добавляем его в URL
+    port = int(os.environ.get('PROD_PORT', 443))
+    if port != 443:
+        base_url = f"https://{host}:{port}"
+    else:
+        base_url = f"https://{host}"
+    
+    return base_url
+
+async def steam_login_handler(request):
+    """Handles the initial Steam login request"""
+    telegram_id = request.match_info.get('telegram_id', '')
+    
+    if not telegram_id:
+        return web.Response(text="Не указан ID пользователя Telegram", status=400)
+    
+    try:
+        # Generate a unique session ID
+        session_id = secrets.token_hex(16)
+        
+        # Store the session mapping
+        steam_auth_sessions[session_id] = telegram_id
+        telegram_auth_requests[telegram_id] = session_id
+        
+        # Generate Steam OpenID parameters
+        return_url = f"{get_base_url()}/auth/steam/callback"
+        
+        params = {
+            'openid.ns': 'http://specs.openid.net/auth/2.0',
+            'openid.mode': 'checkid_setup',
+            'openid.return_to': return_url,
+            'openid.realm': get_base_url(),
+            'openid.identity': 'http://specs.openid.net/auth/2.0/identifier_select',
+            'openid.claimed_id': 'http://specs.openid.net/auth/2.0/identifier_select',
+        }
+        
+        # Construct the Steam OpenID URL
+        url = STEAM_OPENID_URL + '?' + '&'.join([f"{k}={v}" for k, v in params.items()])
+        
+        # Redirect the user to Steam
+        return web.HTTPFound(url)
+    
+    except Exception as e:
+        logger.error(f"Error in steam_login_handler: {e}")
+        return web.Response(text=f"Ошибка при авторизации через Steam: {str(e)}", status=500)
+
+async def steam_callback_handler(request):
+    """Handles the callback from Steam OpenID"""
+    try:
+        # Validate the response from Steam
+        params = request.query
+        
+        if 'openid.mode' not in params or params['openid.mode'] != 'id_res':
+            return web.HTTPFound('/auth/steam/cancel')
+        
+        # Extract the Steam ID
+        claimed_id = params.get('openid.claimed_id', '')
+        steam_id_match = re.search(r'/openid/id/(\d+)$', claimed_id)
+        
+        if not steam_id_match:
+            logger.error(f"Invalid claimed_id format: {claimed_id}")
+            return web.HTTPFound('/auth/steam/cancel')
+        
+        steam_id = steam_id_match.group(1)
+        logger.info(f"Successfully authenticated Steam ID: {steam_id}")
+        
+        # Verify the response with Steam
+        verification_params = dict(params)
+        verification_params['openid.mode'] = 'check_authentication'
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(STEAM_OPENID_URL, data=verification_params) as resp:
+                verification_result = await resp.text()
+                
+                if 'is_valid:true' not in verification_result:
+                    logger.error(f"Steam OpenID verification failed: {verification_result}")
+                    return web.HTTPFound('/auth/steam/cancel')
+        
+        # Get user info from Steam API
+        if STEAM_API_KEY:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    api_url = f"https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key={STEAM_API_KEY}&steamids={steam_id}"
+                    async with session.get(api_url) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            players = data.get('response', {}).get('players', [])
+                            if players:
+                                player = players[0]
+                                steam_username = player.get('personaname', 'Unknown')
+                                logger.info(f"Steam user: {steam_username}, ID: {steam_id}")
+            except Exception as e:
+                logger.error(f"Error getting Steam user info: {e}")
+        
+        # Find the associated Telegram ID
+        # Since we can't store session in the browser easily for this use case,
+        # we'll check all pending authentications to find a match
+        for session_id, telegram_id in list(steam_auth_sessions.items()):
+            # Update the user's Steam ID in the database
+            await db.update_user_steam_id(telegram_id, steam_id)
+            logger.info(f"Updated Steam ID for Telegram user {telegram_id}: {steam_id}")
+            
+            # Clean up the auth session
+            del steam_auth_sessions[session_id]
+            if telegram_id in telegram_auth_requests:
+                del telegram_auth_requests[telegram_id]
+            
+            # Redirect to success page showing the steam_id and telegram_id
+            success_url = f"/auth/steam/success?telegram_id={telegram_id}&steam_id={steam_id}"
+            return web.HTTPFound(success_url)
+        
+        # If no matching session was found
+        return web.Response(text="Не удалось найти сессию аутентификации. Пожалуйста, попробуйте снова.", status=400)
+    
+    except Exception as e:
+        logger.error(f"Error in steam_callback_handler: {e}")
+        return web.Response(text=f"Ошибка при обработке ответа от Steam: {str(e)}", status=500)
+
+async def steam_success_handler(request):
+    """Shows a success page"""
+    telegram_id = request.query.get('telegram_id', '')
+    steam_id = request.query.get('steam_id', '')
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Успешная привязка Steam ID</title>
+        <style>
+            body {{
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                background-color: #f0f2f5;
+            }}
+            .card {{
+                background-color: white;
+                border-radius: 8px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                padding: 30px;
+                text-align: center;
+                max-width: 500px;
+            }}
+            .success-icon {{
+                font-size: 64px;
+                color: #4CAF50;
+                margin-bottom: 20px;
+            }}
+            h1 {{
+                color: #4CAF50;
+                margin-bottom: 20px;
+            }}
+            p {{
+                color: #333;
+                line-height: 1.5;
+                margin-bottom: 20px;
+            }}
+            .steam-id {{
+                background-color: #f5f5f5;
+                padding: 10px;
+                border-radius: 4px;
+                font-family: monospace;
+                margin: 10px 0;
+            }}
+            .button {{
+                display: inline-block;
+                background-color: #171a21;
+                color: white;
+                padding: 10px 20px;
+                border-radius: 4px;
+                text-decoration: none;
+                margin-top: 20px;
+                transition: background-color 0.3s;
+            }}
+            .button:hover {{
+                background-color: #2a475e;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <div class="success-icon">✓</div>
+            <h1>Аккаунт Steam успешно привязан!</h1>
+            <p>Вы успешно привязали свой аккаунт Steam к боту. Теперь бот сможет отслеживать, когда вы играете в Dota 2, и автоматически предлагать опрос для вашей группы.</p>
+            <p>Steam ID:</p>
+            <div class="steam-id">{steam_id}</div>
+            <p>Можете закрыть эту страницу и вернуться в Telegram.</p>
+            <a href="https://t.me/hwga_sausage_bot" class="button">Вернуться к боту</a>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return web.Response(text=html, content_type='text/html')
+
+async def steam_cancel_handler(request):
+    """Shows a cancel page"""
+    html = """
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Отмена привязки Steam ID</title>
+        <style>
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                background-color: #f0f2f5;
+            }
+            .card {
+                background-color: white;
+                border-radius: 8px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                padding: 30px;
+                text-align: center;
+                max-width: 500px;
+            }
+            .cancel-icon {
+                font-size: 64px;
+                color: #f44336;
+                margin-bottom: 20px;
+            }
+            h1 {
+                color: #f44336;
+                margin-bottom: 20px;
+            }
+            p {
+                color: #333;
+                line-height: 1.5;
+                margin-bottom: 20px;
+            }
+            .button {
+                display: inline-block;
+                background-color: #171a21;
+                color: white;
+                padding: 10px 20px;
+                border-radius: 4px;
+                text-decoration: none;
+                margin-top: 20px;
+                transition: background-color 0.3s;
+            }
+            .button:hover {
+                background-color: #2a475e;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <div class="cancel-icon">✕</div>
+            <h1>Привязка отменена</h1>
+            <p>Вы отменили привязку аккаунта Steam к боту или произошла ошибка в процессе авторизации.</p>
+            <p>Вы можете попробовать снова в любое время, выполнив команду /link_steam в боте.</p>
+            <a href="https://t.me/hwga_sausage_bot" class="button">Вернуться к боту</a>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return web.Response(text=html, content_type='text/html')
+
+def get_steam_auth_url(telegram_id):
+    """Получить URL для авторизации через Steam"""
+    base_url = get_base_url()
+    return f"{base_url}/auth/steam/login/{telegram_id}"

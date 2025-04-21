@@ -6,9 +6,10 @@ from datetime import datetime, timedelta
 import re
 import os
 
-from telegram import BotCommand, BotCommandScopeDefault, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import BotCommand, BotCommandScopeDefault, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Update, LabeledPrice
 from telegram.error import BadRequest
-from telegram.ext import ConversationHandler
+from telegram.ext import ConversationHandler, ContextTypes
+from telegram.constants import ParseMode
 
 import db
 import scheduler
@@ -17,6 +18,10 @@ import steam
 from poll_state import poll_state
 
 # Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 # Состояния для верификации Steam аккаунта
@@ -336,96 +341,31 @@ async def set_poll_time_command(update, context):
         await update.message.reply_text("Произошла ошибка при сохранении времени опроса. Попробуйте позже.")
 
 async def link_steam_command(update, context):
-    """Link a Steam ID to a Telegram user."""
-    chat_id = str(update.effective_chat.id)
-    args = context.args
+    """Обработчик команды для привязки Steam ID"""
     user = update.effective_user
-    user_id = str(user.id)
+    chat = update.effective_chat
+    message = update.message
     
-    # Обновляем название чата
-    await update_chat_name(update, chat_id)
-    
-    # Check if user is registered
-    is_registered = await db.is_user_registered(user.id)
-    
-    if not is_registered:
-        # Register the user first
+    if not await db.is_user_registered(user.id):
         await db.register_user(user)
-        logger.info(f"Automatically registered user {user.first_name} ({user.id}) during Steam ID linking")
-
-    if not args or len(args) != 1:
-        await update.message.reply_text(
-            "Пожалуйста, укажите свой Steam ID.\n"
-            "Пример: /link_steam 76561198012345678\n\n"
-            "Чтобы найти свой Steam ID:\n"
-            "1. Откройте свой профиль Steam\n"
-            "2. Скопируйте число из URL (после /profiles/)\n"
-            "3. Или используйте сервис https://steamid.io/"
-        )
-        return
-
-    steam_id = args[0]
-
-    # Validate Steam ID (basic check)
-    if not steam_id.isdigit() or len(steam_id) < 10:
-        await update.message.reply_text("Неверный формат Steam ID. ID должен быть числом не менее 10 цифр.")
-        return
     
-    # Получаем API ключ Steam из переменных окружения
-    steam_api_key = os.environ.get("STEAM_API_KEY")
-    if not steam_api_key:
-        logger.error("Steam API key not set in environment variables")
-        await update.message.reply_text("Ошибка конфигурации бота: отсутствует ключ Steam API.")
-        return
+    # Получаем URL для авторизации через Steam OpenID
+    auth_url = web_server.get_steam_auth_url(user.id)
     
-    # Верификация Steam ID через API
-    profile_data = await steam.verify_steam_id(steam_id, steam_api_key)
-    
-    if not profile_data:
-        await update.message.reply_text(
-            "Не удалось верифицировать Steam ID. Убедитесь, что ID правильный и профиль доступен."
-        )
-        return
-    
-    # Профиль найден, начинаем процесс расширенной верификации
-    # Генерируем уникальный код верификации
-    verification_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    
-    # Сохраняем данные для верификации
-    verification_data[user_id] = {
-        'steam_id': steam_id,
-        'verification_code': verification_code,
-        'profile_url': profile_data['profile_url'],
-        'username': profile_data['username']
-    }
-    
-    # Отправляем инструкции пользователю
-    message_text = (
-        f"🔍 <b>Требуется верификация владения Steam аккаунтом</b>\n\n"
-        f"Для подтверждения, что именно вы владеете Steam аккаунтом <b>{profile_data['username']}</b>, "
-        f"необходимо временно изменить ваше имя в Steam, добавив следующий код:\n\n"
-        f"<code>{verification_code}</code>\n\n"
-        f"<b>Инструкция:</b>\n"
-        f"1. Откройте ваш Steam профиль\n"
-        f"2. Нажмите \"Редактировать профиль\"\n"
-        f"3. Добавьте код <code>{verification_code}</code> к вашему имени\n"
-        f"4. Сохраните изменения\n"
-        f"5. Вернитесь сюда и нажмите кнопку \"Проверить\" ниже\n\n"
-        f"После успешной верификации вы можете вернуть исходное имя."
-    )
-    
-    # Создаем кнопки для действий
+    # Создаем сообщение с инлайн-кнопкой для авторизации
     keyboard = [
-        [InlineKeyboardButton("Открыть Steam профиль", url=profile_data['profile_url'])],
-        [InlineKeyboardButton("Проверить", callback_data=f"verify_steam:{user_id}")],
-        [InlineKeyboardButton("Отмена", callback_data=f"cancel_steam:{user_id}")]
+        [InlineKeyboardButton("Войти через Steam", url=auth_url)]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
+    await message.reply_text(
+        "Для привязки Steam аккаунта, нажмите кнопку ниже и войдите в свой аккаунт Steam. "
+        "После авторизации ваш Steam ID будет автоматически привязан к вашему аккаунту Telegram.\n\n"
+        "Это безопасный способ авторизации, использующий официальный Steam OpenID.",
+        reply_markup=reply_markup
+    )
     
-    logger.info(f"Started Steam verification process for user {user.first_name} ({user_id}) with code {verification_code}")
-    return STEAM_VERIFICATION_WAITING
+    logger.info(f"User {user.id} ({user.username}) requested Steam authentication link")
 
 async def check_steam_verification(update, context):
     """Проверяет код верификации в профиле Steam."""
