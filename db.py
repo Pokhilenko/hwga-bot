@@ -569,3 +569,66 @@ async def set_chat_name(chat_id, chat_name):
             log_error_with_link("Database error in set_chat_name", e)
             
         return success
+
+async def remove_personal_chat_settings():
+    """Удаляет все настройки для личных чатов и очищает все связанные данные"""
+    async with db_semaphore:
+        success = False
+        try:
+            with safe_db_connect() as conn:
+                cursor = conn.cursor()
+                
+                # Получаем список личных чатов (положительные ID)
+                cursor.execute('''
+                SELECT chat_id FROM chat_settings 
+                WHERE CAST(chat_id AS INTEGER) > 0
+                ''')
+                
+                personal_chats = [row[0] for row in cursor.fetchall()]
+                
+                if not personal_chats:
+                    logger.info("Личных чатов не найдено")
+                    return True
+                    
+                logger.info(f"Найдены личные чаты: {personal_chats}")
+                
+                # Для каждого личного чата удаляем данные
+                for chat_id in personal_chats:
+                    # Получаем ID опросов для этого чата
+                    cursor.execute('''
+                    SELECT id FROM polls WHERE chat_id = ?
+                    ''', (chat_id,))
+                    
+                    poll_ids = [row[0] for row in cursor.fetchall()]
+                    
+                    # Удаляем записи о голосах для этих опросов
+                    if poll_ids:
+                        placeholders = ', '.join(['?'] * len(poll_ids))
+                        cursor.execute(f'''
+                        DELETE FROM votes WHERE poll_id IN ({placeholders})
+                        ''', poll_ids)
+                    
+                    # Удаляем записи об опросах для этого чата
+                    cursor.execute('''
+                    DELETE FROM polls WHERE chat_id = ?
+                    ''', (chat_id,))
+                    
+                    # Удаляем настройки чата
+                    cursor.execute('''
+                    DELETE FROM chat_settings WHERE chat_id = ?
+                    ''', (chat_id,))
+                    
+                    # Удаляем записи о последней активности
+                    cursor.execute('''
+                    DELETE FROM last_activity WHERE chat_id = ?
+                    ''', (chat_id,))
+                    
+                    logger.info(f"Удалены данные для личного чата {chat_id}")
+                
+                conn.commit()
+                success = True
+                logger.info("Личные чаты успешно удалены")
+        except Exception as e:
+            log_error_with_link("Database error in remove_personal_chat_settings", e)
+            
+        return success

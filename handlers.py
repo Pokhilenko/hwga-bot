@@ -5,6 +5,8 @@ import string
 from datetime import datetime, timedelta
 import re
 import os
+import ssl
+import aiohttp
 
 from telegram import BotCommand, BotCommandScopeDefault, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Update, LabeledPrice
 from telegram.error import BadRequest
@@ -81,7 +83,6 @@ async def start(update, context):
         "/link_steam - привязать Steam ID\n"
         "/unlink_steam - отвязать Steam ID\n"
         "/stats - статистика опросов\n"
-        "/register_me - зарегистрироваться\n"
         "/set_poll_time - установить время опроса (ЧЧ:ММ)"
     )
 
@@ -250,29 +251,6 @@ async def stats_command(update, context):
         fallback_message += f"Среднее время запуска опроса: {avg_time}\n\n"
         fallback_message += f"Подробная статистика доступна по ссылке:\n{stats_url}"
         await update.message.reply_text(fallback_message)
-
-async def register_me_command(update, context):
-    """Register a user in the database."""
-    chat_id = str(update.effective_chat.id)
-    user = update.effective_user
-    
-    # Обновляем название чата
-    await update_chat_name(update, chat_id)
-    
-    # Check if user is already registered
-    is_registered = await db.is_user_registered(user.id)
-    
-    if is_registered:
-        await update.message.reply_text("Вы уже зарегистрированы.")
-        return
-    
-    # Register the user
-    success = await db.register_user(user)
-    
-    if success:
-        await update.message.reply_text(f"Вы успешно зарегистрированы, {user.first_name}!")
-    else:
-        await update.message.reply_text("Произошла ошибка при регистрации. Попробуйте позже.")
 
 async def set_poll_time_command(update, context):
     """Set custom poll time for a chat."""
@@ -614,10 +592,23 @@ async def handle_poll_answer(update, context):
     if selected_option is not None:
         await poll_state.add_vote(poll_id, user, selected_option)
 
-    # Check if all users have voted
-    for chat_id, poll_data in poll_state.active_polls.items():
+    # Проверяем, не является ли чат личным
+    for chat_id, poll_data in list(poll_state.active_polls.items()):
         if poll_data["poll_id"] == poll_id:
+            # Получаем числовой ID чата
+            numeric_chat_id = int(chat_id) if chat_id.lstrip('-').isdigit() else chat_id
+            
+            # Личные чаты имеют положительный ID
+            is_personal_chat = isinstance(numeric_chat_id, int) and numeric_chat_id > 0
+            
+            # Если это личный чат - не завершаем опрос сразу после единственного голоса
+            if is_personal_chat:
+                logger.info(f"Голос в личном чате {chat_id}, ожидаем таймаута")
+                return
+            
+            # Для групповых чатов - завершаем опрос, если проголосовали все
             if poll_data["all_users"] and poll_data["all_users"].issubset(poll_data["voted_users"]):
+                logger.info(f"Все пользователи проголосовали в чате {chat_id}, завершаем опрос")
                 await process_poll_results(chat_id, context)
             break
 
@@ -833,8 +824,8 @@ async def setup_commands(application):
         BotCommand("stop_poll", "Остановить текущий опрос"),
         BotCommand("link_steam", "Привязать Steam ID"),
         BotCommand("unlink_steam", "Отвязать Steam ID"),
+        BotCommand("who_is_playing", "Показать кто играет в Dota 2"),
         BotCommand("stats", "Статистика опросов"),
-        BotCommand("register_me", "Зарегистрироваться"),
         BotCommand("set_poll_time", "Установить время опроса (ЧЧ:ММ)")
     ]
     
@@ -852,4 +843,205 @@ async def setup_commands(application):
         except Exception as e:
             logger.error(f"Failed to set commands for chat {chat_id}: {e}")
     
-    logger.info("Bot commands have been set up") 
+    logger.info("Bot commands have been set up")
+
+async def who_is_playing_command(update, context):
+    """Отображает статус Steam пользователей в текущем чате"""
+    chat_id = str(update.effective_chat.id)
+    
+    # Обновляем название чата
+    await update_chat_name(update, chat_id)
+    
+    try:
+        # Отправляем сообщение о начале проверки
+        status_message = await update.message.reply_text("🔍 Проверяю статус игроков...", reply_to_message_id=update.message.message_id)
+        
+        # Получаем Steam API ключ
+        steam_api_key = os.environ.get("STEAM_API_KEY")
+        if not steam_api_key:
+            await status_message.edit_text("⚠️ Не задан API ключ Steam. Обратитесь к администратору бота.")
+            return
+        
+        # Получаем пользователей из базы данных вместо API Telegram
+        user_steam_ids = {}
+        
+        try:
+            # Используем SQLite для получения пользователей привязанных к текущему чату
+            async with db.db_semaphore:
+                with db.safe_db_connect() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                    SELECT usc.telegram_id, usc.steam_id, u.first_name
+                    FROM user_steam_chats usc
+                    JOIN users u ON usc.telegram_id = u.telegram_id
+                    WHERE usc.chat_id = ? AND usc.steam_id IS NOT NULL
+                    """, (chat_id,))
+                    
+                    steam_users = cursor.fetchall()
+                    
+            logger.info(f"Найдено {len(steam_users)} пользователей с привязанными Steam ID в чате {chat_id}")
+            
+            # Списки для хранения пользователей по категориям
+            dota_players = []
+            online_users = []
+            offline_users = []
+            other_game_players = []
+            
+            # Если в чате нет привязанных пользователей
+            if not steam_users:
+                await status_message.edit_text("⚠️ В этом чате нет пользователей с привязанными Steam ID.\n\nИспользуйте команду /link_steam для привязки аккаунта.")
+                return
+                
+            # Заполняем словарь пользователей для проверки
+            for user_id, steam_id, first_name in steam_users:
+                user_steam_ids[user_id] = {
+                    'steam_id': steam_id,
+                    'first_name': first_name,
+                    'has_link_issue': False
+                }
+                
+            # Проверка статуса Steam для пользователей с привязанным Steam ID
+            if user_steam_ids:
+                # Создаем SSL-контекст для запросов
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                
+                # Добавляем промежуточное сообщение, чтобы пользователь знал, что происходит
+                if len(user_steam_ids) > 1:
+                    await status_message.edit_text(f"🔍 Проверяю статус {len(user_steam_ids)} игроков...\n\nЭто может занять некоторое время из-за ограничений Steam API.")
+                
+                # Проверяем статус каждого пользователя с интервалом в 2 секунды
+                for i, (user_id, user_data) in enumerate(user_steam_ids.items()):
+                    steam_id = user_data['steam_id']
+                    first_name = user_data['first_name']
+                    
+                    # Добавляем задержку между запросами, чтобы избежать ограничения Steam API
+                    if i > 0:
+                        await asyncio.sleep(2)  # Ждем 2 секунды между запросами
+                    
+                    # Обновляем сообщение, чтобы пользователь видел прогресс
+                    if len(user_steam_ids) > 1:
+                        await status_message.edit_text(f"🔍 Проверяю статус {i+1}/{len(user_steam_ids)} игроков...\n\nСейчас проверяю: {first_name}")
+                    
+                    try:
+                        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+                            url = f"https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key={steam_api_key}&steamids={steam_id}"
+                            
+                            # Добавляем повторные попытки запроса в случае ошибки 429
+                            max_retries = 3
+                            for retry in range(max_retries):
+                                try:
+                                    async with session.get(url) as response:
+                                        if response.status == 429:  # Too Many Requests
+                                            logger.warning(f"Ошибка API Steam 429 для пользователя {first_name}, попытка {retry+1}/{max_retries}")
+                                            if retry < max_retries - 1:
+                                                wait_time = (retry + 1) * 5  # Увеличиваем время ожидания с каждой попыткой
+                                                await asyncio.sleep(wait_time)
+                                                continue  # Повторяем запрос
+                                            else:
+                                                logger.error(f"Исчерпаны попытки запроса к Steam API для пользователя {first_name}")
+                                                offline_users.append(first_name)
+                                                break
+                                        
+                                        if response.status != 200:
+                                            logger.error(f"Ошибка API Steam: {response.status} для пользователя {first_name}")
+                                            offline_users.append(first_name)
+                                            break
+                                        
+                                        data = await response.json()
+                                        players = data.get('response', {}).get('players', [])
+                                        
+                                        if not players:
+                                            logger.warning(f"Нет данных о пользователе Steam {steam_id}")
+                                            offline_users.append(first_name)
+                                            break
+                                        
+                                        player = players[0]
+                                        
+                                        # Определяем статус игрока
+                                        persona_state = player.get('personastate', 0)  # 0 = offline, 1+ = online
+                                        game_id = player.get('gameid', None)
+                                        game_name = player.get('gameextrainfo', None)
+                                        
+                                        # Логируем полную информацию о пользователе
+                                        logger.info(f"Статус Steam для {first_name}: персона={persona_state}, игра={game_id} ({game_name})")
+                                        
+                                        if game_id == "570":  # Dota 2
+                                            dota_players.append(first_name)
+                                            logger.info(f"Пользователь {first_name} играет в Dota 2")
+                                        elif game_id:  # Другая игра
+                                            game_display_name = game_name or "Неизвестная игра"
+                                            other_game_players.append((first_name, game_display_name))
+                                            logger.info(f"Пользователь {first_name} играет в {game_display_name}")
+                                        elif persona_state > 0:  # Онлайн, но не в игре
+                                            online_users.append(first_name)
+                                            logger.info(f"Пользователь {first_name} онлайн")
+                                        else:  # Оффлайн
+                                            offline_users.append(first_name)
+                                            logger.info(f"Пользователь {first_name} оффлайн")
+                                        
+                                        # Успешно получили данные, выходим из цикла повторов
+                                        break
+                                except Exception as e:
+                                    logger.error(f"Ошибка при запросе к Steam API для {first_name}: {e}")
+                                    if retry < max_retries - 1:
+                                        wait_time = (retry + 1) * 5
+                                        await asyncio.sleep(wait_time)
+                                    else:
+                                        offline_users.append(first_name)
+                                        break
+                                    
+                    except Exception as e:
+                        logger.error(f"Ошибка при получении данных Steam для {first_name} ({steam_id}): {e}")
+                        offline_users.append(first_name)
+            
+            # Формируем сообщение со статусом
+            status_text = "🎮 <b>Статус активных игроков:</b>\n\n"
+            
+            # Dota 2 игроки
+            status_text += "🟢 <b>В Dota 2:</b> "
+            if dota_players:
+                status_text += ", ".join(dota_players)
+            else:
+                status_text += "никто"
+            status_text += "\n\n"
+            
+            # Оффлайн пользователи
+            status_text += "⚫ <b>Оффлайн:</b> "
+            if offline_users:
+                status_text += ", ".join(offline_users)
+            else:
+                status_text += "никто"
+            status_text += "\n\n"
+            
+            # Онлайн пользователи
+            status_text += "🔵 <b>Онлайн:</b> "
+            if online_users:
+                status_text += ", ".join(online_users)
+            else:
+                status_text += "никто"
+            status_text += "\n\n"
+            
+            # Пользователи в других играх
+            status_text += "🎲 <b>В другой игре:</b> "
+            if other_game_players:
+                game_players_formatted = [f"{name} ({game})" for name, game in other_game_players]
+                status_text += ", ".join(game_players_formatted)
+            else:
+                status_text += "никто"
+            
+            # Добавляем информацию о количестве проверенных пользователей
+            status_text += f"\n\n<i>Проверено пользователей: {len(user_steam_ids)}</i>"
+            
+            # Отправляем сообщение
+            await status_message.edit_text(status_text, parse_mode=ParseMode.HTML)
+        
+        except Exception as e:
+            logger.error(f"Ошибка при получении пользователей из базы данных: {e}")
+            await status_message.edit_text(f"❌ Ошибка при получении данных из базы: {str(e)}")
+            return
+    
+    except Exception as e:
+        logger.error(f"Ошибка в команде who_is_playing: {e}")
+        await update.message.reply_text(f"❌ Произошла ошибка: {str(e)}") 

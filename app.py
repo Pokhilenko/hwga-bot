@@ -39,14 +39,14 @@ def main():
     application.add_handler(CommandHandler("status", handlers.status_command))
     application.add_handler(CommandHandler("stop_poll", handlers.stop_poll))
     application.add_handler(CommandHandler("stats", handlers.stats_command))
-    application.add_handler(CommandHandler("register_me", handlers.register_me_command))
     application.add_handler(CommandHandler("set_poll_time", handlers.set_poll_time_command))
     
-    # Обработчик для привязки Steam ID через OpenID
+    # Steam related commands
     application.add_handler(CommandHandler("link_steam", handlers.link_steam_command))
-    
-    # Обработчики для отвязки Steam ID
     application.add_handler(CommandHandler("unlink_steam", handlers.unlink_steam_command))
+    application.add_handler(CommandHandler("who_is_playing", handlers.who_is_playing_command))
+    
+    # Callback query handlers
     application.add_handler(CallbackQueryHandler(handlers.handle_unlink_steam_confirm, pattern="^unlink_confirm:"))
     application.add_handler(CallbackQueryHandler(handlers.handle_unlink_steam_cancel, pattern="^unlink_cancel:"))
 
