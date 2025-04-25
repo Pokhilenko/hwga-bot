@@ -23,10 +23,17 @@ async def setup_jobs(job_queue, send_poll_func, steam_api_key):
     # Set up custom poll times for each chat
     await setup_custom_poll_times(job_queue, send_poll_func)
     
+<<<<<<< HEAD
     # Set up Steam status checker - run every minute
     steam_check_job = job_queue.run_repeating(
         lambda ctx: steam.check_steam_status(ctx, steam_api_key, send_poll_func),
         interval=5*60,  # Check every 5 minutes
+=======
+    # Set up Steam status checker - run every hour
+    steam_check_job = job_queue.run_repeating(
+        lambda ctx: steam.check_steam_status(ctx, steam_api_key, send_poll_func),
+        interval=60*60,  # Check every hour
+>>>>>>> 0eb1cc3 (changes from rpi)
         first=0  # Start immediately
     )
     
