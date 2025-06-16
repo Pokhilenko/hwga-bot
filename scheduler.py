@@ -12,28 +12,25 @@ logger = logging.getLogger(__name__)
 async def setup_jobs(job_queue, send_poll_func, steam_api_key):
     """Set up scheduled jobs"""
     
-    # Schedule daily poll at 21:30 (GMT+6)
-    target_time = time(hour=15, minute=30)  # 21:30 GMT+6 = 15:30 UTC
-    job_queue.run_daily(
-        lambda ctx: daily_poll(ctx, send_poll_func),
-        time=target_time,
-        days=(0, 1, 2, 3, 4, 5, 6)  # Run every day
-    )
+    # Determine if any custom poll times are configured
+    chat_times = await db.get_all_chat_poll_times()
+
+    if not chat_times:
+        # No custom schedules - run default poll at 21:30 (GMT+6)
+        target_time = time(hour=15, minute=30)  # 21:30 GMT+6 = 15:30 UTC
+        job_queue.run_daily(
+            lambda ctx: daily_poll(ctx, send_poll_func),
+            time=target_time,
+            days=(0, 1, 2, 3, 4, 5, 6)
+        )
+    else:
+        # Set up custom poll times for each chat
+        await setup_custom_poll_times(job_queue, send_poll_func, chat_times)
     
-    # Set up custom poll times for each chat
-    await setup_custom_poll_times(job_queue, send_poll_func)
-    
-<<<<<<< HEAD
-    # Set up Steam status checker - run every minute
+    # Set up Steam status checker - run every 5 minutes
     steam_check_job = job_queue.run_repeating(
         lambda ctx: steam.check_steam_status(ctx, steam_api_key, send_poll_func),
         interval=5*60,  # Check every 5 minutes
-=======
-    # Set up Steam status checker - run every hour
-    steam_check_job = job_queue.run_repeating(
-        lambda ctx: steam.check_steam_status(ctx, steam_api_key, send_poll_func),
-        interval=60*60,  # Check every hour
->>>>>>> 0eb1cc3 (changes from rpi)
         first=0  # Start immediately
     )
     
@@ -42,10 +39,9 @@ async def setup_jobs(job_queue, send_poll_func, steam_api_key):
     
     logger.info("Scheduled jobs set up successfully")
 
-async def setup_custom_poll_times(job_queue, send_poll_func):
+async def setup_custom_poll_times(job_queue, send_poll_func, chat_times):
     """Set up custom poll times for each chat"""
-    # Get all chat IDs and their custom poll times
-    chat_times = await db.get_all_chat_poll_times()
+    # chat_times is a mapping of chat_id -> poll time in UTC
     
     for chat_id, poll_time_str in chat_times.items():
         try:
