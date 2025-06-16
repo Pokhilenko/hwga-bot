@@ -161,18 +161,29 @@ async def main():
                 else:
                     logger.info(f"Пользователь {user['first_name']} офлайн")
         
-        # Выводим результаты для каждого чата
-        print(f"\n=== Чат {chat_id} ===")
-        print(f"Всего пользователей: {len(users)}")
-        print(f"Пользователи онлайн ({len(online_users)}): {', '.join(online_users) if online_users else 'Нет пользователей онлайн'}")
-        
-        if in_game_users:
-            print(f"Пользователи в игре ({len(in_game_users)}):")
-            for user in in_game_users:
-                print(f"  - {user['name']}: {user['game']}")
-        else:
-            print("Нет пользователей в игре")
-        print()
+        log_chat_results(chat_id, users, online_users, in_game_users)
+
+
+def log_chat_results(chat_id, users, online_users, in_game_users):
+    """Log aggregated results for a chat."""
+    logger.info("=== Чат %s ===", chat_id)
+    logger.info("Всего пользователей: %d", len(users))
+
+    if online_users:
+        logger.info(
+            "Пользователи онлайн (%d): %s",
+            len(online_users),
+            ", ".join(online_users),
+        )
+    else:
+        logger.info("Нет пользователей онлайн")
+
+    if in_game_users:
+        logger.info("Пользователи в игре (%d):", len(in_game_users))
+        for user in in_game_users:
+            logger.info("  - %s: %s", user["name"], user["game"])
+    else:
+        logger.info("Нет пользователей в игре")
 
 if __name__ == "__main__":
     asyncio.run(main()) 
