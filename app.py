@@ -40,6 +40,7 @@ def main():
     application.add_handler(CommandHandler("stop_poll", handlers.stop_poll))
     application.add_handler(CommandHandler("stats", handlers.stats_command))
     application.add_handler(CommandHandler("set_poll_time", handlers.set_poll_time_command))
+    application.add_handler(CommandHandler("get_poll_time", handlers.get_poll_time_command))
     
     # Steam related commands
     application.add_handler(CommandHandler("link_steam", handlers.link_steam_command))
