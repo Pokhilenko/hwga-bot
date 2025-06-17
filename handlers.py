@@ -83,7 +83,8 @@ async def start(update, context):
         "/link_steam - привязать Steam ID\n"
         "/unlink_steam - отвязать Steam ID\n"
         "/stats - статистика опросов\n"
-        "/set_poll_time - установить время опроса (ЧЧ:ММ)"
+        "/set_poll_time - установить время опроса (ЧЧ:ММ)\n"
+        "/get_poll_time - показать установленное время опроса"
     )
 
 async def poll_now_command(update, context):
@@ -297,8 +298,8 @@ async def set_poll_time_command(update, context):
         
         # Reschedule the poll
         success = await scheduler.reschedule_poll_for_chat(
-            context.job_queue, 
-            chat_id, 
+            context.job_queue,
+            chat_id,
             send_poll
         )
         
@@ -309,6 +310,23 @@ async def set_poll_time_command(update, context):
             )
     else:
         await update.message.reply_text("Произошла ошибка при сохранении времени опроса. Попробуйте позже.")
+
+async def get_poll_time_command(update, context):
+    """Display the currently configured poll time."""
+    chat_id = str(update.effective_chat.id)
+
+    # Обновляем название чата
+    await update_chat_name(update, chat_id)
+
+    poll_time_str = await db.get_poll_time(chat_id)
+
+    # Convert UTC time back to GMT+6 for display
+    hour, minute = map(int, poll_time_str.split(':'))
+    dt = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+    dt += timedelta(hours=6)
+    gmt6_time = f"{dt.hour:02d}:{dt.minute:02d}"
+
+    await update.message.reply_text(f"Текущее время опроса: {gmt6_time} (GMT+6)")
 
 async def link_steam_command(update, context):
     """Обработчик команды для привязки Steam ID через OAuth"""
@@ -826,7 +844,8 @@ async def setup_commands(application):
         BotCommand("unlink_steam", "Отвязать Steam ID"),
         BotCommand("who_is_playing", "Показать кто играет в Dota 2"),
         BotCommand("stats", "Статистика опросов"),
-        BotCommand("set_poll_time", "Установить время опроса (ЧЧ:ММ)")
+        BotCommand("set_poll_time", "Установить время опроса (ЧЧ:ММ)"),
+        BotCommand("get_poll_time", "Показать установленное время опроса")
     ]
     
     # Set commands globally
