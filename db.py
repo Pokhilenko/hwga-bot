@@ -375,8 +375,43 @@ async def get_chat_name_by_id(chat_id):
                     chat_name = result[0]
         except Exception as e:
             log_error_with_link("Database error in get_chat_name_by_id", e)
-            
+
         return chat_name
+
+async def get_known_chat_users(chat_id):
+    """Return a set of user IDs known to participate in the given chat."""
+    async with db_semaphore:
+        users = set()
+        try:
+            with safe_db_connect() as conn:
+                cursor = conn.cursor()
+
+                # Users who have voted in previous polls
+                cursor.execute(
+                    """
+                    SELECT DISTINCT v.user_id
+                    FROM votes v
+                    JOIN polls p ON v.poll_id = p.id
+                    WHERE p.chat_id = ?
+                    """,
+                    (chat_id,),
+                )
+                users.update(int(row[0]) for row in cursor.fetchall())
+
+                # Users linked via Steam to this chat
+                cursor.execute(
+                    """
+                    SELECT DISTINCT telegram_id
+                    FROM user_steam_chats
+                    WHERE chat_id = ?
+                    """,
+                    (chat_id,),
+                )
+                users.update(int(row[0]) for row in cursor.fetchall())
+        except Exception as e:
+            log_error_with_link("Database error in get_known_chat_users", e)
+
+        return users
 
 async def get_poll_stats(chat_id, poll_options):
     """Get poll statistics for a chat"""

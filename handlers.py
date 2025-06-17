@@ -626,7 +626,11 @@ async def handle_poll_answer(update, context):
                 return
             
             # Для групповых чатов - завершаем опрос, если проголосовали все
-            if poll_data["all_users"] and poll_data["all_users"].issubset(poll_data["voted_users"]):
+            # Избегаем завершения, когда известен только один участник (обычно администратор)
+            if (
+                len(poll_data["all_users"]) > 1
+                and poll_data["all_users"].issubset(poll_data["voted_users"])
+            ):
                 logger.info(f"Все пользователи проголосовали в чате {chat_id}, завершаем опрос")
                 await process_poll_results(chat_id, context)
             break
@@ -663,7 +667,12 @@ async def send_poll(chat_id, context, message, manual=False):
         trigger_type = "manual" if manual else "scheduled"
         await poll_state.create_poll(chat_id, poll_id, message_id, trigger_type)
 
-        # Get chat members to track who needs to vote
+        # Get known chat members from DB
+        known_users = await db.get_known_chat_users(chat_id)
+        for uid in known_users:
+            poll_state.add_user_to_chat(chat_id, uid)
+
+        # Add administrators as a fallback
         try:
             chat_members = await context.bot.get_chat_administrators(numeric_chat_id)
             for member in chat_members:
