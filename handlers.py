@@ -1015,46 +1015,32 @@ async def who_is_playing_command(update, context):
                         logger.error(f"Ошибка при получении данных Steam для {first_name} ({steam_id}): {e}")
                         offline_users.append(first_name)
             
-            # Формируем сообщение со статусом
-            status_text = "🎮 <b>Статус активных игроков:</b>\n\n"
-            
-            # Dota 2 игроки
-            status_text += "🟢 <b>В Dota 2:</b> "
-            if dota_players:
-                status_text += ", ".join(dota_players)
+            # Формируем короткое сообщение о статусе
+            if len(offline_users) == len(user_steam_ids) and user_steam_ids:
+                status_text = "Сейчас все оффлайн"
+            elif len(dota_players) == len(user_steam_ids) and user_steam_ids:
+                status_text = "Сейчас все играют в Dota 2"
             else:
-                status_text += "никто"
-            status_text += "\n\n"
-            
-            # Оффлайн пользователи
-            status_text += "⚫ <b>Оффлайн:</b> "
-            if offline_users:
-                status_text += ", ".join(offline_users)
-            else:
-                status_text += "никто"
-            status_text += "\n\n"
-            
-            # Онлайн пользователи
-            status_text += "🔵 <b>Онлайн:</b> "
-            if online_users:
-                status_text += ", ".join(online_users)
-            else:
-                status_text += "никто"
-            status_text += "\n\n"
-            
-            # Пользователи в других играх
-            status_text += "🎲 <b>В другой игре:</b> "
-            if other_game_players:
-                game_players_formatted = [f"{name} ({game})" for name, game in other_game_players]
-                status_text += ", ".join(game_players_formatted)
-            else:
-                status_text += "никто"
-            
-            # Добавляем информацию о количестве проверенных пользователей
-            status_text += f"\n\n<i>Проверено пользователей: {len(user_steam_ids)}</i>"
-            
+                segments = []
+                if dota_players:
+                    segments.append("в Dota 2: " + ", ".join(dota_players))
+                if other_game_players:
+                    games_formatted = ", ".join(
+                        f"{name} ({game})" for name, game in other_game_players
+                    )
+                    segments.append("в другой игре: " + games_formatted)
+                if online_users:
+                    segments.append("онлайн: " + ", ".join(online_users))
+                if offline_users and len(offline_users) != len(user_steam_ids):
+                    segments.append("оффлайн: " + ", ".join(offline_users))
+
+                if segments:
+                    status_text = "Сейчас " + "; ".join(segments)
+                else:
+                    status_text = "Сейчас никто не играет"
+
             # Отправляем сообщение
-            await status_message.edit_text(status_text, parse_mode=ParseMode.HTML)
+            await status_message.edit_text(status_text)
         
         except Exception as e:
             logger.error(f"Ошибка при получении пользователей из базы данных: {e}")
