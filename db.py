@@ -154,6 +154,20 @@ def setup_database():
             )
             ''')
 
+            # Transactions table for wallet sync
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS transactions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                amount REAL,
+                currency TEXT,
+                date TIMESTAMP,
+                description TEXT,
+                wallet_id TEXT,
+                last_synced TIMESTAMP
+            )
+            ''')
+
             conn.commit()
             conn.close()
             logger.info("Database tables created or updated successfully")
@@ -665,5 +679,75 @@ async def remove_personal_chat_settings():
                 logger.info("Личные чаты успешно удалены")
         except Exception as e:
             log_error_with_link("Database error in remove_personal_chat_settings", e)
-            
+
         return success
+
+
+async def upsert_transaction(tx_id, user_id, amount, currency, date, description, wallet_id=None):
+    """Insert or update a transaction record."""
+    async with db_semaphore:
+        try:
+            with safe_db_connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    INSERT OR REPLACE INTO transactions (id, user_id, amount, currency, date, description, wallet_id, last_synced)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(last_synced, NULL))
+                    ''',
+                    (tx_id, user_id, amount, currency, date, description, wallet_id)
+                )
+                conn.commit()
+                return True
+        except Exception as e:
+            log_error_with_link("Database error in upsert_transaction", e)
+            return False
+
+
+async def mark_transaction_synced(tx_id, wallet_id):
+    """Update sync info for a transaction."""
+    async with db_semaphore:
+        try:
+            with safe_db_connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    UPDATE transactions
+                    SET wallet_id = ?, last_synced = ?
+                    WHERE id = ?
+                    ''',
+                    (wallet_id, datetime.now(), tx_id)
+                )
+                conn.commit()
+                return True
+        except Exception as e:
+            log_error_with_link("Database error in mark_transaction_synced", e)
+            return False
+
+
+async def get_unsynced_transactions():
+    """Return transactions that have not been synced to the wallet."""
+    async with db_semaphore:
+        try:
+            with safe_db_connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT id, user_id, amount, currency, date, description
+                    FROM transactions WHERE last_synced IS NULL
+                    '''
+                )
+                rows = cursor.fetchall()
+                return [
+                    {
+                        'id': r[0],
+                        'user_id': r[1],
+                        'amount': r[2],
+                        'currency': r[3],
+                        'date': r[4],
+                        'description': r[5],
+                    }
+                    for r in rows
+                ]
+        except Exception as e:
+            log_error_with_link("Database error in get_unsynced_transactions", e)
+            return []
