@@ -82,8 +82,18 @@ class WalletClient:
             return []
 
         logger.debug("Listing transactions since %s", since)
-        await asyncio.sleep(0)
-        return []
+
+        # If the unofficial SDK is present, delegate to it on a thread so the
+        # async API does not block. Otherwise return an empty list as a
+        # placeholder implementation.
+        if WalletAPI is None:
+            logger.warning("WalletAPI library not installed; returning empty list")
+            await asyncio.sleep(0)
+            return []
+
+        if since:
+            return await asyncio.to_thread(self.client.list_transactions, since=since)
+        return await asyncio.to_thread(self.client.list_transactions)
 
     async def delete_transaction(self, transaction_id):
         """Delete a transaction from the wallet."""

@@ -9,3 +9,5 @@ BudgetBakers Wallet. The `WalletClient` class in `wallet.py` now exposes
 asynchronous methods for creating, reading, updating and deleting transactions
 via the wallet service. The real API calls still rely on the unofficial
 `WalletAPI` package or the BudgetBakers Open Banking API.
+If the SDK is not installed, wallet operations such as listing transactions
+gracefully fall back to returning an empty result instead of raising errors.
