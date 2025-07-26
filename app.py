@@ -3,7 +3,15 @@ import os
 import asyncio
 from dotenv import load_dotenv
 
-from telegram.ext import ApplicationBuilder, CommandHandler, PollAnswerHandler, CallbackQueryHandler, ConversationHandler
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    PollAnswerHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+)
 
 import db
 import handlers
@@ -46,6 +54,9 @@ def main():
     application.add_handler(CommandHandler("link_steam", handlers.link_steam_command))
     application.add_handler(CommandHandler("unlink_steam", handlers.unlink_steam_command))
     application.add_handler(CommandHandler("who_is_playing", handlers.who_is_playing_command))
+
+    # Text messages
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message))
     
     # Callback query handlers
     application.add_handler(CallbackQueryHandler(handlers.handle_unlink_steam_confirm, pattern="^unlink_confirm:"))

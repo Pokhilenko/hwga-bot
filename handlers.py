@@ -7,9 +7,10 @@ import re
 import os
 import ssl
 import aiohttp
+import httpx
+from telegram.error import BadRequest, TelegramError
 
 from telegram import BotCommand, BotCommandScopeDefault, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Update, LabeledPrice
-from telegram.error import BadRequest
 from telegram.ext import ConversationHandler, ContextTypes
 from telegram.constants import ParseMode
 
@@ -26,6 +27,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+async def safe_reply(target, *args, **kwargs):
+    """Safely send a reply or message without crashing on Telegram errors."""
+    try:
+        if hasattr(target, "reply_text"):
+            return await target.reply_text(*args, **kwargs)
+        return await target.send_message(*args, **kwargs)
+    except TelegramError as e:
+        logger.error(f"Telegram error while sending message: {e}", exc_info=True)
+        return None
+
 # Bot configuration
 POLL_QUESTION = "Хатим сасать!?!?!"
 POLL_OPTIONS = [
@@ -35,6 +47,9 @@ POLL_OPTIONS = [
     "5-10 минут и готов сасать",
     "Полчасика и буду пасасэо"
 ]
+
+# Remote retrieval service endpoint for message queries
+RAG_SERVICE_URL = os.environ.get("RAG_SERVICE_URL", "http://localhost:8000/query")
 
 # Poll category mappings (0-indexed)
 CATEGORY_MAPPING = {
@@ -1073,4 +1088,25 @@ async def who_is_playing_command(update, context):
     
     except Exception as e:
         logger.error(f"Ошибка в команде who_is_playing: {e}")
-        await update.message.reply_text(f"❌ Произошла ошибка: {str(e)}") 
+        await update.message.reply_text(f"❌ Произошла ошибка: {str(e)}")
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming user text and reply via the remote RAG service."""
+    if not update.message or not update.message.text:
+        return
+
+    user_text = update.message.text
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                RAG_SERVICE_URL,
+                json={"query": user_text},
+            )
+            response.raise_for_status()
+            data = response.json()
+            answer = data.get("answer", "I'm not sure how to respond to that.")
+        await safe_reply(update.message, answer)
+    except Exception as e:
+        logger.exception("Failed to fetch answer from RAG service")
+        await safe_reply(update.message, "System malfunction. Try again later.")
