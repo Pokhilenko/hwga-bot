@@ -1,0 +1,33 @@
+# Deployment configuration for HWGA Bot
+
+# Server details
+server:
+  host: 192.168.88.200
+  access: ssh
+  project_path: ~/Projects/hwga-bot
+  service_name: hwga-bot.service
+
+# Deployment steps
+deployment:
+  update_procedure:
+    - name: Push changes
+      description: Push changes to the main branch
+      command: git push origin main
+
+    - name: Pull changes on server
+      description: SSH into server and pull latest changes
+      command: |
+        ssh ${server.host}
+        cd ${server.project_path}
+        git pull origin main
+
+    - name: Restart service
+      description: Restart the bot service
+      command: |
+        ssh ${server.host}
+        sudo systemctl restart ${server.service_name}
+
+# Additional notes
+notes:
+  - Make sure you have SSH access configured
+  - Verify service status after restart with: systemctl status hwga-bot.service 

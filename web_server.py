@@ -1,7 +1,5 @@
 import logging
 import os
-import json
-import asyncio
 from datetime import datetime
 from aiohttp import web
 import socket
@@ -18,32 +16,32 @@ from db import DB_FILE  # Import DB_FILE constant
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Настройки сервера
-DEV_MODE = os.environ.get('BOT_ENV', 'dev') == 'dev'
-DEV_HOST = '0.0.0.0'
+# Server settings
+DEV_MODE = os.environ.get("BOT_ENV", "dev") == "dev"
+DEV_HOST = "0.0.0.0"
 DEV_PORT = 8081
-PROD_HOST = os.environ.get('PROD_HOST', socket.gethostbyname(socket.gethostname()))
-PROD_PORT = int(os.environ.get('PROD_PORT', 8081))
+PROD_HOST = os.environ.get("PROD_HOST", socket.gethostbyname(socket.gethostname()))
+PROD_PORT = int(os.environ.get("PROD_PORT", 8081))
 
 HOST = DEV_HOST if DEV_MODE else PROD_HOST
 PORT = DEV_PORT if DEV_MODE else PROD_PORT
 
 # Steam OpenID configuration
-STEAM_OPENID_URL = 'https://steamcommunity.com/openid/login'
-STEAM_API_KEY = os.environ.get('STEAM_API_KEY', '')
+STEAM_OPENID_URL = "https://steamcommunity.com/openid/login"
+STEAM_API_KEY = os.environ.get("STEAM_API_KEY", "")
 
-# Хранение временных состояний и связок telegram_id <-> код сессии
+# Storage for temporary states and telegram_id <-> session code mappings
 steam_auth_sessions = {}  # session_id -> (telegram_id, chat_id)
 telegram_auth_requests = {}  # telegram_id -> session_id
 
 # Database file
 DATABASE = DB_FILE
 
-# Путь к статическим файлам
-STATIC_DIR = pathlib.Path(__file__).parent / 'static'
+# Path to static files
+STATIC_DIR = pathlib.Path(__file__).parent / "static"
 os.makedirs(STATIC_DIR, exist_ok=True)
 
-# Шаблон для HTML-страницы
+# HTML page template
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -252,51 +250,59 @@ HTML_TEMPLATE = """
 </html>
 """
 
+
 async def get_detailed_poll_stats(chat_id, poll_options):
-    """Получает детальную статистику по опросам для конкретного чата"""
+    """Retrieves detailed poll statistics for a specific chat"""
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
+
     try:
-        # Получаем имя чата (если есть)
+        # Get chat name (if available)
         chat_name = ""
         c.execute("SELECT chat_name FROM chat_settings WHERE chat_id = ?", (chat_id,))
         result = c.fetchone()
         if result:
             chat_name = result["chat_name"]
-        
-        # Общее количество опросов
+
+        # Total number of polls
         c.execute("SELECT COUNT(*) FROM polls WHERE chat_id = ?", (chat_id,))
         total_polls = c.fetchone()[0]
-        
-        # Общее количество голосов
-        c.execute("""
+
+        # Total number of votes
+        c.execute(
+            """
             SELECT COUNT(*) FROM votes v
             JOIN polls p ON v.poll_id = p.id
             WHERE p.chat_id = ?
-        """, (chat_id,))
+        """,
+            (chat_id,),
+        )
         total_votes = c.fetchone()[0]
-        
-        # Среднее количество голосов на опрос
+
+        # Average number of votes per poll
         avg_votes_per_poll = total_votes / total_polls if total_polls > 0 else 0
-        
-        # Популярность ответов
+
+        # Answer popularity
         option_votes = [0] * len(poll_options)
-        c.execute("""
+        c.execute(
+            """
             SELECT option_index, COUNT(*) as count FROM votes v
             JOIN polls p ON v.poll_id = p.id
             WHERE p.chat_id = ? 
             GROUP BY option_index
             ORDER BY option_index
-        """, (chat_id,))
+        """,
+            (chat_id,),
+        )
         for row in c.fetchall():
             option_index = row["option_index"]
             if 0 <= option_index < len(option_votes):
                 option_votes[option_index] = row["count"]
-        
-        # Активные пользователи
-        c.execute("""
+
+        # Active users
+        c.execute(
+            """
             SELECT u.first_name || ' ' || COALESCE(u.last_name, '') as name FROM users u
             JOIN votes v ON u.telegram_id = v.user_id
             JOIN polls p ON v.poll_id = p.id
@@ -304,56 +310,67 @@ async def get_detailed_poll_stats(chat_id, poll_options):
             GROUP BY u.telegram_id
             ORDER BY COUNT(*) DESC
             LIMIT 10
-        """, (chat_id,))
+        """,
+            (chat_id,),
+        )
         active_users = [row["name"].strip() for row in c.fetchall()]
-        
-        # Среднее время голосования
-        c.execute("""
+
+        # Average voting time
+        c.execute(
+            """
             SELECT AVG(strftime('%s', v.response_time) - strftime('%s', p.trigger_time)) as avg_time
             FROM votes v
             JOIN polls p ON v.poll_id = p.id
             WHERE p.chat_id = ?
-        """, (chat_id,))
+        """,
+            (chat_id,),
+        )
         avg_seconds = c.fetchone()[0] or 0
         avg_minutes = int(avg_seconds / 60)
         avg_vote_time = f"{avg_minutes} мин"
-        
-        # Последние опросы
-        c.execute("""
+
+        # Recent polls
+        c.execute(
+            """
             SELECT p.id, p.trigger_time 
             FROM polls p 
             WHERE p.chat_id = ? 
             ORDER BY p.trigger_time DESC 
             LIMIT 5
-        """, (chat_id,))
+        """,
+            (chat_id,),
+        )
         recent_polls = []
-        
+
         for row in c.fetchall():
             poll_id = row["id"]
-            poll_time = datetime.fromisoformat(row["trigger_time"]).strftime("%d.%m.%Y %H:%M")
-            
-            # Голоса для каждого опроса
-            c.execute("""
+            poll_time = datetime.fromisoformat(row["trigger_time"]).strftime(
+                "%d.%m.%Y %H:%M"
+            )
+
+            # Votes for each poll
+            c.execute(
+                """
                 SELECT option_index, COUNT(*) as count
                 FROM votes
                 WHERE poll_id = ?
                 GROUP BY option_index
                 ORDER BY option_index
-            """, (poll_id,))
-            
+            """,
+                (poll_id,),
+            )
+
             poll_votes = [0] * len(poll_options)
             for vote in c.fetchall():
                 option_index = vote["option_index"]
                 if 0 <= option_index < len(poll_votes):
                     poll_votes[option_index] = vote["count"]
-            
-            recent_polls.append({
-                "time": poll_time,
-                "votes": poll_votes
-            })
-        
-        # Данные для таблицы голосов по пользователям
-        c.execute("""
+
+            recent_polls.append({"time": poll_time, "votes": poll_votes})
+
+        # Data for user votes table
+        c.execute(
+            """
             SELECT 
                 u.telegram_id, 
                 u.first_name || ' ' || COALESCE(u.last_name, '') as name,
@@ -365,23 +382,25 @@ async def get_detailed_poll_stats(chat_id, poll_options):
             WHERE p.chat_id = ?
             GROUP BY u.telegram_id, v.option_index
             ORDER BY u.telegram_id, v.option_index
-        """, (chat_id,))
-        
+        """,
+            (chat_id,),
+        )
+
         user_votes_data = {}
         for row in c.fetchall():
-            user_id = row["telegram_id"]
             user_name = row["name"].strip()
             option_index = row["option_index"]
             vote_count = row["vote_count"]
-            
+
             if user_name not in user_votes_data:
                 user_votes_data[user_name] = [0] * len(poll_options)
-            
+
             if 0 <= option_index < len(poll_options):
                 user_votes_data[user_name][option_index] = vote_count
-        
-        # Данные для таблицы голосов по дням недели
-        c.execute("""
+
+        # Data for votes by weekday table
+        c.execute(
+            """
             SELECT 
                 strftime('%w', p.trigger_time) as weekday,
                 v.option_index,
@@ -391,25 +410,36 @@ async def get_detailed_poll_stats(chat_id, poll_options):
             WHERE p.chat_id = ?
             GROUP BY weekday, v.option_index
             ORDER BY weekday, v.option_index
-        """, (chat_id,))
-        
+        """,
+            (chat_id,),
+        )
+
         weekday_votes_data = {}
-        weekday_names = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота']
-        
+        weekday_names = [
+            "Воскресенье",
+            "Понедельник",
+            "Вторник",
+            "Среда",
+            "Четверг",
+            "Пятница",
+            "Суббота",
+        ]
+
         for row in c.fetchall():
             weekday_idx = int(row["weekday"])
             weekday = weekday_names[weekday_idx]
             option_index = row["option_index"]
             vote_count = row["vote_count"]
-            
+
             if weekday not in weekday_votes_data:
                 weekday_votes_data[weekday] = [0] * len(poll_options)
-            
+
             if 0 <= option_index < len(poll_options):
                 weekday_votes_data[weekday][option_index] = vote_count
-        
-        # Данные для таблицы голосов по времени суток
-        c.execute("""
+
+        # Data for votes by time of day table
+        c.execute(
+            """
             SELECT 
                 CASE
                     WHEN strftime('%H', p.trigger_time) BETWEEN '06' AND '11' THEN 'Утро'
@@ -430,21 +460,23 @@ async def get_detailed_poll_stats(chat_id, poll_options):
                     WHEN 'Вечер' THEN 3
                     WHEN 'Ночь' THEN 4
                 END, v.option_index
-        """, (chat_id,))
-        
+        """,
+            (chat_id,),
+        )
+
         time_votes_data = {}
         for row in c.fetchall():
             time_of_day = row["time_of_day"]
             option_index = row["option_index"]
             vote_count = row["vote_count"]
-            
+
             if time_of_day not in time_votes_data:
                 time_votes_data[time_of_day] = [0] * len(poll_options)
-            
+
             if 0 <= option_index < len(poll_options):
                 time_votes_data[time_of_day][option_index] = vote_count
-        
-        # Формируем итоговую структуру данных
+
+        # Form the final data structure
         stats_data = {
             "chat_id": chat_id,
             "chat_name": chat_name,
@@ -458,55 +490,56 @@ async def get_detailed_poll_stats(chat_id, poll_options):
             "recent_polls": recent_polls,
             "user_votes_data": user_votes_data,
             "weekday_votes_data": weekday_votes_data,
-            "time_votes_data": time_votes_data
+            "time_votes_data": time_votes_data,
         }
-        
+
         return stats_data
-    
+
     except Exception as e:
         logger.error(f"Error in get_detailed_poll_stats: {e}", exc_info=True)
         raise
     finally:
         conn.close()
 
+
 def format_poll_history(poll_history, poll_options):
-    """Форматирует историю опросов в HTML"""
+    """Formats poll history into HTML"""
     if not poll_history:
         return "<p>История опросов отсутствует</p>"
-    
+
     html = ""
     for poll in poll_history:
         html += f"""
         <div class="poll-item">
-            <div class="poll-time">{poll['time']}</div>
-            <div class="poll-votes">Всего голосов: {sum(poll['votes'])}</div>
+            <div class="poll-time">{poll["time"]}</div>
+            <div class="poll-votes">Всего голосов: {sum(poll["votes"])}</div>
         """
-        
+
         for i, option in enumerate(poll_options):
-            votes = poll['votes'][i]
-            max_votes = max(poll['votes']) if any(poll['votes']) else 1
+            votes = poll["votes"][i]
+            max_votes = max(poll["votes"]) if any(poll["votes"]) else 1
             percentage = (votes / max_votes) * 100 if max_votes > 0 else 0
-            
+
             html += f"""
             <div style="margin-top: 8px;">
                 <div>{option}: {votes}</div>
                 <div class="option-bar" style="width: {percentage}%"></div>
             </div>
             """
-        
+
         html += "</div>"
-    
+
     return html
 
+
 def generate_stats_html(stats_data):
-    """Генерирует HTML-страницу со статистикой"""
+    """Generates an HTML page with statistics"""
     try:
         chat_id = stats_data["chat_id"]
         chat_name = stats_data["chat_name"]
         total_polls = stats_data["total_polls"]
-        total_votes = stats_data["total_votes"] 
+        total_votes = stats_data["total_votes"]
         avg_votes_per_poll = stats_data["avg_votes_per_poll"]
-        active_users = stats_data["active_users"]
         poll_options = stats_data["poll_options"]
         option_votes = stats_data["option_votes"]
         avg_vote_time = stats_data["avg_vote_time"]
@@ -515,10 +548,10 @@ def generate_stats_html(stats_data):
         weekday_votes_data = stats_data["weekday_votes_data"]
         time_votes_data = stats_data["time_votes_data"]
 
-        # Определяем название чата для отображения
+        # Determine the chat name for display
         display_chat_name = chat_name if chat_name else f"Чат {chat_id}"
-        
-        # Начало HTML документа с нашим CSS
+
+        # Start of HTML document with our CSS
         html = f"""
         <!DOCTYPE html>
         <html lang="ru">
@@ -743,14 +776,14 @@ def generate_stats_html(stats_data):
                         </thead>
                         <tbody>
         """
-        
-        # Добавляем строки для каждого варианта ответа
+
+        # Add rows for each answer option
         max_votes = max(option_votes) if option_votes else 1
         for i, option in enumerate(poll_options):
             votes = option_votes[i]
             percentage = (votes / total_votes) * 100 if total_votes > 0 else 0
             bar_percentage = (votes / max_votes) * 100 if max_votes > 0 else 0
-            
+
             html += f"""
                 <tr>
                     <td>{option}</td>
@@ -763,7 +796,7 @@ def generate_stats_html(stats_data):
                     </td>
                 </tr>
             """
-        
+
         html += """
                         </tbody>
                     </table>
@@ -783,28 +816,28 @@ def generate_stats_html(stats_data):
                                 <tr>
                                     <th>Пользователь</th>
         """
-        
-        # Добавляем заголовки для каждого варианта
+
+        # Add headers for each option
         for option in poll_options:
             html += f"<th>{option}</th>"
-        
+
         html += """
                                     <th>Всего</th>
                                 </tr>
                             </thead>
                             <tbody>
         """
-        
-        # Добавляем данные по пользователям
+
+        # Add data for users
         for user_name, votes_array in user_votes_data.items():
             total_user_votes = sum(votes_array)
             html += f"<tr><td>{user_name}</td>"
-            
+
             for votes in votes_array:
                 html += f"<td>{votes}</td>"
-            
+
             html += f"<td>{total_user_votes}</td></tr>"
-        
+
         html += """
                             </tbody>
                         </table>
@@ -817,39 +850,47 @@ def generate_stats_html(stats_data):
                                 <tr>
                                     <th>День недели</th>
         """
-        
-        # Добавляем заголовки для каждого варианта
+
+        # Add headers for each option
         for option in poll_options:
             html += f"<th>{option}</th>"
-        
+
         html += """
                                     <th>Всего</th>
                                 </tr>
                             </thead>
                             <tbody>
         """
-        
-        # Порядок дней недели для отображения
-        weekday_order = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
-        
-        # Добавляем данные по дням недели
+
+        # Order of weekdays for display
+        weekday_order = [
+            "Понедельник",
+            "Вторник",
+            "Среда",
+            "Четверг",
+            "Пятница",
+            "Суббота",
+            "Воскресенье",
+        ]
+
+        # Add data for weekdays
         for weekday in weekday_order:
             if weekday in weekday_votes_data:
                 votes_array = weekday_votes_data[weekday]
                 total_weekday_votes = sum(votes_array)
                 html += f"<tr><td>{weekday}</td>"
-                
+
                 for votes in votes_array:
                     html += f"<td>{votes}</td>"
-                
+
                 html += f"<td>{total_weekday_votes}</td></tr>"
             else:
-                # Если нет данных для этого дня недели
+                # If there is no data for this weekday
                 html += f"<tr><td>{weekday}</td>"
                 for _ in poll_options:
                     html += "<td>0</td>"
                 html += "<td>0</td></tr>"
-        
+
         html += """
                             </tbody>
                         </table>
@@ -862,39 +903,39 @@ def generate_stats_html(stats_data):
                                 <tr>
                                     <th>Время суток</th>
         """
-        
-        # Добавляем заголовки для каждого варианта
+
+        # Add headers for each option
         for option in poll_options:
             html += f"<th>{option}</th>"
-        
+
         html += """
                                     <th>Всего</th>
                                 </tr>
                             </thead>
                             <tbody>
         """
-        
-        # Порядок времени суток для отображения
-        time_order = ['Утро', 'День', 'Вечер', 'Ночь']
-        
-        # Добавляем данные по времени суток
+
+        # Order of times of day for display
+        time_order = ["Утро", "День", "Вечер", "Ночь"]
+
+        # Add data for times of day
         for time_of_day in time_order:
             if time_of_day in time_votes_data:
                 votes_array = time_votes_data[time_of_day]
                 total_time_votes = sum(votes_array)
                 html += f"<tr><td>{time_of_day}</td>"
-                
+
                 for votes in votes_array:
                     html += f"<td>{votes}</td>"
-                
+
                 html += f"<td>{total_time_votes}</td></tr>"
             else:
-                # Если нет данных для этого времени суток
+                # If there is no data for this time of day
                 html += f"<tr><td>{time_of_day}</td>"
                 for _ in poll_options:
                     html += "<td>0</td>"
                 html += "<td>0</td></tr>"
-        
+
         html += """
                             </tbody>
                         </table>
@@ -905,20 +946,20 @@ def generate_stats_html(stats_data):
                     <h2>История опросов</h2>
                     <div class="poll-history">
         """
-        
-        # Добавляем историю опросов
+
+        # Add poll history
         for poll in recent_polls:
             html += f"""
             <div class="poll-item">
-                <div class="poll-time">{poll['time']}</div>
-                <div class="poll-votes">Всего голосов: {sum(poll['votes'])}</div>
+                <div class="poll-time">{poll["time"]}</div>
+                <div class="poll-votes">Всего голосов: {sum(poll["votes"])}</div>
             """
-            
+
             for i, option in enumerate(poll_options):
-                votes = poll['votes'][i]
-                max_votes = max(poll['votes']) if any(poll['votes']) else 1
+                votes = poll["votes"][i]
+                max_votes = max(poll["votes"]) if any(poll["votes"]) else 1
                 percentage = (votes / max_votes) * 100 if max_votes > 0 else 0
-                
+
                 html += f"""
                 <div class="poll-option">
                     <div class="option-label">{option}</div>
@@ -926,9 +967,9 @@ def generate_stats_html(stats_data):
                     <div class="option-votes">{votes}</div>
                 </div>
                 """
-            
+
             html += "</div>"
-        
+
         html += """
                     </div>
                 </div>
@@ -958,115 +999,131 @@ def generate_stats_html(stats_data):
         </body>
         </html>
         """
-        
+
         return html
     except Exception as e:
         logger.error(f"Error in generate_stats_html: {e}", exc_info=True)
         return f"<html><body><h1>Ошибка при создании статистики</h1><p>{str(e)}</p></body></html>"
 
+
 async def get_stats_handler(request):
-    """Обработчик GET-запроса для получения статистики"""
-    chat_id = request.match_info.get('chat_id', '')
-    
+    """GET request handler for retrieving statistics"""
+    chat_id = request.match_info.get("chat_id", "")
+
     if not chat_id:
         return web.Response(text="Не указан ID чата", status=400)
-    
+
     try:
-        # Получаем опции опроса из запроса (или используем дефолтные)
-        poll_options = request.query.get('options', '').split(',')
+        # Get poll options from the request (or use defaults)
+        poll_options = request.query.get("options", "").split(",")
         if not poll_options or len(poll_options) < 2:
-            # Дефолтные опции
+            # Default options
             poll_options = [
                 "Конечно, нахуй, да!",
                 "А когда не сасать?!",
                 "Со вчерашнего рот болит",
                 "5-10 минут и готов сасать",
-                "Полчасика и буду пасасэо"
+                "Полчасика и буду пасасэо",
             ]
-        
-        # Генерируем HTML
+
+        # Generate HTML
         stats = await get_detailed_poll_stats(chat_id, poll_options)
         html = generate_stats_html(stats)
-        
-        # Сохраняем HTML в файл
+
+        # Save HTML to file
         filename = f"stats_{chat_id}.html"
         filepath = STATIC_DIR / filename
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             f.write(html)
-        
-        # Перенаправляем на созданный файл
-        return web.HTTPFound(f'/static/{filename}')
-    
+
+        # Redirect to the created file
+        return web.HTTPFound(f"/static/{filename}")
+
     except Exception as e:
         logger.error(f"Error generating stats: {e}")
-        return web.Response(text=f"Ошибка при генерации статистики: {str(e)}", status=500)
+        return web.Response(
+            text=f"Ошибка при генерации статистики: {str(e)}", status=500
+        )
+
 
 def get_stats_url(chat_id):
-    """Получить URL для статистики"""
-    # Используем домен вместо IP-адреса
-    host = os.environ.get('DOMAIN_NAME', 'hwga.pokhilen.co')
+    """Get URL for statistics"""
+    # Use domain instead of IP address
+    host = os.environ.get("DOMAIN_NAME", "hwga.pokhilen.co")
     base_url = f"https://{host}"
     return f"{base_url}/stats/{chat_id}"
 
+
 async def start_web_server():
-    """Запускает веб-сервер"""
+    """Starts the web server"""
     app = web.Application()
-    
-    # Маршруты для статистики
-    app.router.add_get('/stats/{chat_id}', get_stats_handler)
-    
-    # Маршруты для Steam OpenID авторизации
-    app.router.add_get('/auth/steam/login/{telegram_id}', steam_login_handler)
-    app.router.add_get('/auth/steam/callback', steam_callback_handler)
-    app.router.add_get('/auth/steam/success', steam_success_handler)
-    app.router.add_get('/auth/steam/cancel', steam_cancel_handler)
-    
-    # Тестовый маршрут
-    app.router.add_get('/', lambda request: web.Response(text='HWGA Bot Web Server is running!'))
-    
-    app.router.add_static('/static/', path=STATIC_DIR, name='static')
-    
-    # Запуск сервера
+
+    # Routes for statistics
+    app.router.add_get("/stats/{chat_id}", get_stats_handler)
+
+    # Routes for Steam OpenID authorization
+    app.router.add_get("/auth/steam/login/{telegram_id}", steam_login_handler)
+    app.router.add_get("/auth/steam/callback", steam_callback_handler)
+    app.router.add_get("/auth/steam/success", steam_success_handler)
+    app.router.add_get("/auth/steam/cancel", steam_cancel_handler)
+
+    # Test route
+    app.router.add_get(
+        "/", lambda request: web.Response(text="HWGA Bot Web Server is running!")
+    )
+
+    app.router.add_static("/static/", path=STATIC_DIR, name="static")
+
+    # Start the server
     runner = web.AppRunner(app)
     await runner.setup()
-    
-    # Запускаем HTTP сервер на основном порту
+
+    # Start HTTP server on the main port
     http_site = web.TCPSite(runner, HOST, PORT)
     await http_site.start()
     logger.info(f"HTTP web server started at http://{HOST}:{PORT}")
-    
-    # Пути к SSL сертификатам
-    ssl_cert = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cert', 'cert.pem')
-    ssl_key = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cert', 'key.pem')
-    
-    # Проверяем наличие SSL сертификатов
+
+    # Paths to SSL certificates
+    ssl_cert = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "cert", "cert.pem"
+    )
+    ssl_key = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "cert", "key.pem"
+    )
+
+    # Check for SSL certificates
     if os.path.exists(ssl_cert) and os.path.exists(ssl_key):
-        # Создаем SSL контекст
+        # Create SSL context
         ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ssl_context.load_cert_chain(ssl_cert, ssl_key)
-        
-        # Запускаем HTTPS сервер на стандартном порту 443
+
+        # Start HTTPS server on standard port 443
         try:
             https_site = web.TCPSite(runner, HOST, 443, ssl_context=ssl_context)
             await https_site.start()
             logger.info(f"HTTPS web server started at https://{HOST}")
         except OSError as e:
-            # Если нет прав на порт 443, пробуем альтернативный порт из env
-            alt_port = int(os.environ.get('PROD_PORT', 8444))
-            logger.warning(f"Failed to start HTTPS server on port 443: {e}. Trying port {alt_port}...")
+            # If no permissions for port 443, try alternative port from env
+            alt_port = int(os.environ.get("PROD_PORT", 8444))
+            logger.warning(
+                f"Failed to start HTTPS server on port 443: {e}. Trying port {alt_port}..."
+            )
             https_site = web.TCPSite(runner, HOST, alt_port, ssl_context=ssl_context)
             await https_site.start()
             logger.info(f"HTTPS web server started at https://{HOST}:{alt_port}")
     else:
-        logger.warning(f"SSL certificates not found at {ssl_cert} and {ssl_key}. HTTPS server not started.")
-    
+        logger.warning(
+            f"SSL certificates not found at {ssl_cert} and {ssl_key}. HTTPS server not started."
+        )
+
     return runner
 
+
 def format_user_votes_table(user_votes_data, poll_options):
-    """Форматирует таблицу с голосами пользователей"""
+    """Formats the table with user votes"""
     if not user_votes_data:
         return "<p>Нет данных о голосах пользователей</p>"
-    
+
     html = """
     <div class="stats-card">
         <div class="stats-title">Распределение ответов по пользователям</div>
@@ -1075,55 +1132,53 @@ def format_user_votes_table(user_votes_data, poll_options):
                 <tr>
                     <th>Пользователь</th>
     """
-    
-    # Добавляем заголовки столбцов с вариантами ответов
+
+    # Add column headers with answer options
     for option in poll_options:
         html += f"<th>{option}</th>"
-    
+
     html += """
                     <th>Всего</th>
                 </tr>
             </thead>
             <tbody>
     """
-    
-    # Сортируем пользователей по общему количеству голосов (по убыванию)
+
+    # Sort users by total votes (descending)
     sorted_users = sorted(
-        user_votes_data.items(),
-        key=lambda x: sum(x[1]),
-        reverse=True
+        user_votes_data.items(), key=lambda x: sum(x[1]), reverse=True
     )
-    
-    # Добавляем строки для каждого пользователя
+
+    # Add rows for each user
     for user_name, votes in sorted_users:
         total_votes = sum(votes)
         if total_votes == 0:
-            continue  # Пропускаем пользователей без голосов
-            
-        html += f"<tr><td>{user_name}</td>"
-        
-        # Добавляем ячейки для каждого варианта ответа
+            # Skip users without votes
+            html += f"<tr><td>{user_name}</td>"
+
+        # Add cells for each answer option
         for vote_count in votes:
-            # Выделяем ячейку с максимальным значением
+            # Highlight cell with maximum value
             is_max = vote_count == max(votes) and vote_count > 0
-            style = ' class="max-value"' if is_max else ''
+            style = ' class="max-value"' if is_max else ""
             html += f"<td{style}>{vote_count}</td>"
-        
+
         html += f"<td>{total_votes}</td></tr>"
-    
+
     html += """
             </tbody>
         </table>
     </div>
     """
-    
+
     return html
 
+
 def format_weekday_votes_table(weekday_votes_data, poll_options):
-    """Форматирует таблицу с голосами по дням недели"""
+    """Formats the table with votes by weekday"""
     if not weekday_votes_data:
         return "<p>Нет данных о голосах по дням недели</p>"
-    
+
     html = """
     <div class="stats-card">
         <div class="stats-title">Распределение ответов по дням недели</div>
@@ -1132,53 +1187,62 @@ def format_weekday_votes_table(weekday_votes_data, poll_options):
                 <tr>
                     <th>День недели</th>
     """
-    
-    # Добавляем заголовки столбцов с вариантами ответов
+
+    # Add column headers with answer options
     for option in poll_options:
         html += f"<th>{option}</th>"
-    
+
     html += """
                     <th>Всего</th>
                 </tr>
             </thead>
             <tbody>
     """
-    
-    # Порядок дней недели
-    weekday_order = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    
-    # Добавляем строки для каждого дня недели
+
+    # Order of weekdays
+    weekday_order = [
+        "Понедельник",
+        "Вторник",
+        "Среда",
+        "Четверг",
+        "Пятница",
+        "Суббота",
+        "Воскресенье",
+    ]
+
+    # Add data for weekdays
     for day in weekday_order:
         if day in weekday_votes_data:
             votes = weekday_votes_data[day]
             total_votes = sum(votes)
             if total_votes == 0:
                 continue  # Пропускаем дни без голосов
-                
+
             html += f"<tr><td>{day}</td>"
-            
-            # Добавляем ячейки для каждого варианта ответа
+
+            # Add cells for each answer option
             for vote_count in votes:
-                # Выделяем ячейку с максимальным значением
+                # Highlight cell with maximum value
                 is_max = vote_count == max(votes) and vote_count > 0
-                style = ' class="max-value"' if is_max else ''
+                style = ' class="max-value"' if is_max else ""
                 html += f"<td{style}>{vote_count}</td>"
-            
+
             html += f"<td>{total_votes}</td></tr>"
-    
+
     html += """
             </tbody>
         </table>
     </div>
     """
-    
+
     return html
+
 
 def format_time_votes_table(time_votes_data, poll_options):
     """Форматирует таблицу с голосами по времени суток"""
     if not time_votes_data:
         return "<p>Нет данных о голосах по времени суток</p>"
-    
+
     html = """
     <div class="stats-card">
         <div class="stats-title">Распределение ответов по времени суток</div>
@@ -1187,142 +1251,147 @@ def format_time_votes_table(time_votes_data, poll_options):
                 <tr>
                     <th>Время суток</th>
     """
-    
-    # Добавляем заголовки столбцов с вариантами ответов
+
+    # Add column headers with answer options
     for option in poll_options:
         html += f"<th>{option}</th>"
-    
+
     html += """
                     <th>Всего</th>
                 </tr>
             </thead>
             <tbody>
     """
-    
+
     # Порядок периодов времени
     time_order = ["Утро (6-12)", "День (12-18)", "Вечер (18-0)", "Ночь (0-6)"]
-    
-    # Добавляем строки для каждого периода времени
+
+    # Add data for times of day
     for period in time_order:
         if period in time_votes_data:
             votes = time_votes_data[period]
             total_votes = sum(votes)
             if total_votes == 0:
                 continue  # Пропускаем периоды без голосов
-                
+
             html += f"<tr><td>{period}</td>"
-            
-            # Добавляем ячейки для каждого варианта ответа
+
+            # Add cells for each answer option
             for vote_count in votes:
-                # Выделяем ячейку с максимальным значением
+                # Highlight cell with maximum value
                 is_max = vote_count == max(votes) and vote_count > 0
-                style = ' class="max-value"' if is_max else ''
+                style = ' class="max-value"' if is_max else ""
                 html += f"<td{style}>{vote_count}</td>"
-            
+
             html += f"<td>{total_votes}</td></tr>"
-    
+
     html += """
             </tbody>
         </table>
     </div>
     """
-    
+
     return html
+
 
 # Steam OpenID Authentication Handlers
 
+
 def get_base_url():
     """Get the base URL for callbacks"""
-    # Используем домен вместо IP-адреса
-    host = os.environ.get('DOMAIN_NAME', 'hwga.pokhilen.co')
+    # Use domain instead of IP address
+    host = os.environ.get("DOMAIN_NAME", "hwga.pokhilen.co")
     base_url = f"https://{host}"
     return base_url
 
+
 async def steam_login_handler(request):
     """Handles the initial Steam login request"""
-    telegram_id = request.match_info.get('telegram_id', '')
-    chat_id = request.query.get('chat_id', '')
-    
+    telegram_id = request.match_info.get("telegram_id", "")
+    chat_id = request.query.get("chat_id", "")
+
     if not telegram_id:
         return web.Response(text="Не указан ID пользователя Telegram", status=400)
-    
+
     try:
         # Проверяем, привязан ли уже Steam ID к данному чату
         if chat_id:
             is_linked = await db.is_steam_id_linked_to_chat(telegram_id, chat_id)
-            
+
             if is_linked:
                 # Получаем информацию о пользователе
                 user_info = await db.get_user_info(telegram_id)
-                if user_info and user_info['steam_id']:
-                    # Получаем название чата
-                    chat_name = await db.get_chat_name_by_id(chat_id) or "неизвестный чат"
-                    
+                if user_info and user_info["steam_id"]:
                     # Перенаправляем на страницу успешной авторизации
                     redirect_url = f"/auth/steam/success?telegram_id={telegram_id}&steam_id={user_info['steam_id']}&chat_id={chat_id}&already_linked=true"
                     return web.HTTPFound(redirect_url)
-        
+
         # Generate a unique session ID
         session_id = secrets.token_hex(16)
-        
+
         # Store the session mapping with chat_id
         steam_auth_sessions[session_id] = (telegram_id, chat_id)
         telegram_auth_requests[telegram_id] = session_id
-        
+
         # Generate Steam OpenID parameters
         return_url = f"{get_base_url()}/auth/steam/callback"
-        
+
         params = {
-            'openid.ns': 'http://specs.openid.net/auth/2.0',
-            'openid.mode': 'checkid_setup',
-            'openid.return_to': return_url,
-            'openid.realm': get_base_url(),
-            'openid.identity': 'http://specs.openid.net/auth/2.0/identifier_select',
-            'openid.claimed_id': 'http://specs.openid.net/auth/2.0/identifier_select',
+            "openid.ns": "http://specs.openid.net/auth/2.0",
+            "openid.mode": "checkid_setup",
+            "openid.return_to": return_url,
+            "openid.realm": get_base_url(),
+            "openid.identity": "http://specs.openid.net/auth/2.0/identifier_select",
+            "openid.claimed_id": "http://specs.openid.net/auth/2.0/identifier_select",
         }
-        
+
         # Construct the Steam OpenID URL
-        url = STEAM_OPENID_URL + '?' + '&'.join([f"{k}={v}" for k, v in params.items()])
-        
+        url = STEAM_OPENID_URL + "?" + "&".join([f"{k}={v}" for k, v in params.items()])
+
         # Redirect the user to Steam
         return web.HTTPFound(url)
-    
+
     except Exception as e:
         logger.error(f"Error in steam_login_handler: {e}")
-        return web.Response(text=f"Ошибка при авторизации через Steam: {str(e)}", status=500)
+        return web.Response(
+            text=f"Ошибка при авторизации через Steam: {str(e)}", status=500
+        )
+
 
 async def steam_callback_handler(request):
     """Handles the callback from Steam OpenID"""
     try:
         # Validate the response from Steam
         params = request.query
-        
-        if 'openid.mode' not in params or params['openid.mode'] != 'id_res':
-            return web.HTTPFound('/auth/steam/cancel')
-        
+
+        if "openid.mode" not in params or params["openid.mode"] != "id_res":
+            return web.HTTPFound("/auth/steam/cancel")
+
         # Extract the Steam ID
-        claimed_id = params.get('openid.claimed_id', '')
-        steam_id_match = re.search(r'/openid/id/(\d+)$', claimed_id)
-        
+        claimed_id = params.get("openid.claimed_id", "")
+        steam_id_match = re.search(r"/openid/id/(\d+)$", claimed_id)
+
         if not steam_id_match:
             logger.error(f"Invalid claimed_id format: {claimed_id}")
-            return web.HTTPFound('/auth/steam/cancel')
-        
+            return web.HTTPFound("/auth/steam/cancel")
+
         steam_id = steam_id_match.group(1)
         logger.info(f"Successfully authenticated Steam ID: {steam_id}")
-        
+
         # Verify the response with Steam
         verification_params = dict(params)
-        verification_params['openid.mode'] = 'check_authentication'
-        
+        verification_params["openid.mode"] = "check_authentication"
+
         async with aiohttp.ClientSession() as session:
             async with session.post(STEAM_OPENID_URL, data=verification_params) as resp:
                 verification_result = await resp.text()
-                
-                if 'is_valid:true' not in verification_result:
-                    logger.error(f"Steam OpenID verification failed: {verification_result}")
-                    return web.HTTPFound('/auth/steam/cancel')
-        
+
+                if "is_valid:true" not in verification_result:
+                    logger.error(
+                        f"Steam OpenID verification failed: {verification_result}"
+                    )
+                    return web.HTTPFound("/auth/steam/cancel")
+
         # Get user info from Steam API
         if STEAM_API_KEY:
             try:
@@ -1331,72 +1400,81 @@ async def steam_callback_handler(request):
                     async with session.get(api_url) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            players = data.get('response', {}).get('players', [])
+                            players = data.get("response", {}).get("players", [])
                             if players:
                                 player = players[0]
-                                steam_username = player.get('personaname', 'Unknown')
-                                logger.info(f"Steam user: {steam_username}, ID: {steam_id}")
+                                steam_username = player.get("personaname", "Unknown")
+                                logger.info(
+                                    f"Steam user: {steam_username}, ID: {steam_id}"
+                                )
             except Exception as e:
                 logger.error(f"Error getting Steam user info: {e}")
-        
+
         # Find the associated Telegram ID
         # Since we can't store session in the browser easily for this use case,
         # we'll check all pending authentications to find a match
         for session_id, session_data in list(steam_auth_sessions.items()):
             telegram_id, chat_id = session_data
-            
+
             # Update the user's Steam ID in the database
             if chat_id:
                 # Link to specific chat
                 await db.update_user_steam_id(telegram_id, steam_id, chat_id)
-                logger.info(f"Updated Steam ID for Telegram user {telegram_id} in chat {chat_id}: {steam_id}")
+                logger.info(
+                    f"Updated Steam ID for Telegram user {telegram_id} in chat {chat_id}: {steam_id}"
+                )
             else:
                 # Just update global Steam ID
                 await db.update_user_steam_id(telegram_id, steam_id)
-                logger.info(f"Updated global Steam ID for Telegram user {telegram_id}: {steam_id}")
-            
+                logger.info(
+                    f"Updated global Steam ID for Telegram user {telegram_id}: {steam_id}"
+                )
+
             # Clean up the auth session
             del steam_auth_sessions[session_id]
             if telegram_id in telegram_auth_requests:
                 del telegram_auth_requests[telegram_id]
-            
+
             # Redirect to success page showing the steam_id and telegram_id
             success_url = f"/auth/steam/success?telegram_id={telegram_id}&steam_id={steam_id}&chat_id={chat_id}"
             return web.HTTPFound(success_url)
-        
+
         # If no matching session was found
-        return web.Response(text="Не удалось найти сессию аутентификации. Пожалуйста, попробуйте снова.", status=400)
-    
+        return web.Response(
+            text="Не удалось найти сессию аутентификации. Пожалуйста, попробуйте снова.",
+            status=400,
+        )
+
     except Exception as e:
         logger.error(f"Error in steam_callback_handler: {e}")
-        return web.Response(text=f"Ошибка при обработке ответа от Steam: {str(e)}", status=500)
+        return web.Response(
+            text=f"Ошибка при обработке ответа от Steam: {str(e)}", status=500
+        )
+
 
 async def steam_success_handler(request):
     """Shows a success page"""
-    telegram_id = request.query.get('telegram_id', '')
-    steam_id = request.query.get('steam_id', '')
-    chat_id = request.query.get('chat_id', '')
-    already_linked = request.query.get('already_linked', '') == 'true'
-    
+    steam_id = request.query.get("steam_id", "")
+    chat_id = request.query.get("chat_id", "")
+    already_linked = request.query.get("already_linked", "") == "true"
+
     chat_name = "неизвестный чат"
     if chat_id:
         chat_name_result = await db.get_chat_name_by_id(chat_id)
         if chat_name_result:
             chat_name = chat_name_result
-    
+
     if already_linked:
         # Если аккаунт уже был привязан ранее
         success_message = "Аккаунт Steam уже привязан!"
-        description = f"Ваш аккаунт Steam уже привязан к чату \"{chat_name}\". Вам не нужно привязывать его повторно."
+        description = f'Ваш аккаунт Steam уже привязан к чату "{chat_name}". Вам не нужно привязывать его повторно.'
         icon_color = "#3498db"  # Синий цвет для информационного сообщения
     else:
         # Стандартное сообщение для новой привязки
         success_message = "Аккаунт Steam успешно привязан!"
-        description = f"Вы успешно привязали свой аккаунт Steam к чату \"{chat_name}\". Теперь бот сможет отслеживать, когда вы играете в Dota 2, и автоматически предлагать опрос для вашей группы."
+        description = f'Вы успешно привязали свой аккаунт Steam к чату "{chat_name}". Теперь бот сможет отслеживать, когда вы играете в Dota 2, и автоматически предлагать опрос для вашей группы.'
         icon_color = "#4CAF50"  # Зеленый цвет для успешной привязки
-    
-    chat_info = f" к чату \"{chat_name}\"" if chat_id else ""
-    
+
     html = f"""
     <!DOCTYPE html>
     <html lang="ru">
@@ -1460,7 +1538,7 @@ async def steam_success_handler(request):
     </head>
     <body>
         <div class="card">
-            <div class="success-icon">{'ℹ' if already_linked else '✓'}</div>
+            <div class="success-icon">{"ℹ" if already_linked else "✓"}</div>
             <h1>{success_message}</h1>
             <p>{description}</p>
             <p>Steam ID:</p>
@@ -1471,8 +1549,9 @@ async def steam_success_handler(request):
     </body>
     </html>
     """
-    
-    return web.Response(text=html, content_type='text/html')
+
+    return web.Response(text=html, content_type="text/html")
+
 
 async def steam_cancel_handler(request):
     """Shows a cancel page"""
@@ -1546,8 +1625,9 @@ async def steam_cancel_handler(request):
     </body>
     </html>
     """
-    
-    return web.Response(text=html, content_type='text/html')
+
+    return web.Response(text=html, content_type="text/html")
+
 
 def get_steam_auth_url(telegram_id, chat_id=None):
     """Получить URL для авторизации через Steam"""

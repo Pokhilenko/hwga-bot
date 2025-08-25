@@ -8,17 +8,22 @@ import db
 # Configure logging
 logger = logging.getLogger(__name__)
 
+
 class PollState:
     def __init__(self):
         self.active_polls: Dict[str, Dict] = {}  # chat_id -> poll data
         self.scheduled_tasks: Dict[str, asyncio.Task] = {}  # chat_id -> task
-        self.registered_chats: Set[str] = set()  # Set of chat_ids where the bot has been activated
+        self.registered_chats: Set[str] = (
+            set()
+        )  # Set of chat_ids where the bot has been activated
         self.steam_check_task = None  # Task for checking Steam status
 
     def is_active(self, chat_id: str) -> bool:
         return chat_id in self.active_polls
 
-    async def create_poll(self, chat_id: str, poll_id: str, message_id: int, trigger_type: str) -> None:
+    async def create_poll(
+        self, chat_id: str, poll_id: str, message_id: int, trigger_type: str
+    ) -> None:
         self.active_polls[chat_id] = {
             "poll_id": poll_id,
             "message_id": message_id,
@@ -42,10 +47,7 @@ class PollState:
     async def add_vote(self, poll_id: str, user, option_index: int) -> None:
         for chat_id, poll_data in self.active_polls.items():
             if poll_data["poll_id"] == poll_id:
-                poll_data["votes"][user.id] = {
-                    "user": user,
-                    "option": option_index
-                }
+                poll_data["votes"][user.id] = {"user": user, "option": option_index}
                 poll_data["voted_users"].add(user.id)
 
                 # Store user info in database
@@ -53,7 +55,7 @@ class PollState:
 
                 # Store vote in database
                 await db.store_vote(poll_data["db_poll_id"], user.id, option_index)
-                
+
                 return
 
     def get_poll_data(self, chat_id: str) -> Optional[Dict]:
@@ -66,7 +68,9 @@ class PollState:
     async def close_poll(self, chat_id: str) -> None:
         if chat_id in self.active_polls:
             # Update database with end time
-            await db.close_poll_record(chat_id, self.active_polls[chat_id]["db_poll_id"])
+            await db.close_poll_record(
+                chat_id, self.active_polls[chat_id]["db_poll_id"]
+            )
             del self.active_polls[chat_id]
 
         # Cancel any running tasks for this chat
@@ -91,6 +95,7 @@ class PollState:
         if self.steam_check_task:
             self.steam_check_task.cancel()
         self.steam_check_task = task
+
 
 # Create a global instance
 poll_state = PollState()
