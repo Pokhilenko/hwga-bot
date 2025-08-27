@@ -55,3 +55,19 @@ I have made the following architectural improvements to the project:
 -   The bot's language and theme are informal and use Russian slang. This is an intentional design choice.
 -   The bot requires a `BOT_TOKEN` and a `STEAM_API_KEY` to be set as environment variables to function correctly.
 -   The bot uses an SQLite database (`poll_bot.db`) to store its data.
+
+## Deployment
+
+### Testing on Raspberry Pi 3
+
+To test the bot on a Raspberry Pi 3, follow these steps:
+
+1.  Push your changes to the `main` branch.
+2.  SSH into the Raspberry Pi: `ssh dmitrii@rpi3.local`
+3.  Navigate to the project directory: `cd Projects/hwga-bot`
+4.  Pull the latest changes from the `main` branch: `git pull`
+5.  Install/update the dependencies: `pip install -r requirements.txt`
+6.  Restart the bot service: `sudo systemctl restart hwga-bot`
+7.  Check the logs to ensure the bot is running correctly: `sudo journalctl -u hwga-bot -f`
+
+**Important:** Do not push any changes from the Raspberry Pi.

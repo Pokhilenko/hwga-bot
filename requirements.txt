@@ -3,3 +3,5 @@ apscheduler
 python-dotenv
 pytz
 aiohttp
+sqlalchemy
+alembic
