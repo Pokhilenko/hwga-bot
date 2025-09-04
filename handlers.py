@@ -551,23 +551,11 @@ async def handle_poll_answer(update, context):
         logger.error(f"Database error in handle_poll_answer: {e}")
 
 
-@update_chat_name_decorator
 async def send_poll(chat_id, context, message, manual=False):
     """Send a poll to the specified chat."""
     try:
         # If chat_id is a string with a number, convert it to int for the Telegram API
         numeric_chat_id = int(chat_id) if chat_id.lstrip("-").isdigit() else chat_id
-
-        # Get chat information to update the name
-        try:
-            chat = await context.bot.get_chat(numeric_chat_id)
-            if chat.title:
-                await db.set_chat_name(chat_id, chat.title)
-                logger.info(
-                    f"Updated chat name from send_poll: {chat_id} -> {chat.title}"
-                )
-        except (BadRequest, DatabaseError) as e:
-            logger.warning(f"Could not get chat info for {chat_id}: {e}")
 
         # Send the leading message
         await context.bot.send_message(chat_id=numeric_chat_id, text=message)

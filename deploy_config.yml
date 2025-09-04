@@ -21,6 +21,13 @@ deployment:
         cd ${server.project_path}
         git pull origin main
 
+    - name: Install dependencies
+      description: Install or update dependencies on the server
+      command: |
+        ssh ${server.host}
+        cd ${server.project_path}
+        pip install -r requirements.txt
+
     - name: Restart service
       description: Restart the bot service
       command: |
