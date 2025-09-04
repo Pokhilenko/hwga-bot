@@ -19,7 +19,7 @@ The project is structured into several modules:
 
 ## Key Features
 
--   **Manual and Scheduled Polls:** Users can start a poll at any time using the `/pol_now` command, or the bot can be configured to start a poll at a specific time every day.
+-   **Manual and Scheduled Polls:** Users can start a poll at any time using the `/poll_now` command, or the bot can be configured to start a poll at a specific time every day.
 -   **Steam Integration:** Users can link their Steam accounts to the bot.
     -   The bot can check which users in a chat are currently playing Dota 2.
     -   The bot can be configured to automatically send a notification when someone starts playing Dota 2.
@@ -30,7 +30,7 @@ The project is structured into several modules:
 ## Bot Commands
 
 -   `/start`: Registers the chat for polls and shows a welcome message.
--   `/pol_now`: Starts a new poll manually.
+-   `/poll_now`: Starts a new poll manually.
 -   `/status`: Shows the status of the current poll.
 -   `/stop_poll`: Stops the current poll.
 -   `/stats`: Displays poll statistics.

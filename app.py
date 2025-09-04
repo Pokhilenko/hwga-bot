@@ -35,7 +35,7 @@ def main():
 
     # Register command handlers
     application.add_handler(CommandHandler("start", handlers.start))
-    application.add_handler(CommandHandler("pol_now", handlers.poll_now_command))
+    application.add_handler(CommandHandler("poll_now", handlers.poll_now_command))
     application.add_handler(CommandHandler("status", handlers.status_command))
     application.add_handler(CommandHandler("stop_poll", handlers.stop_poll))
     application.add_handler(CommandHandler("stats", handlers.stats_command))

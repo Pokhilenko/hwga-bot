@@ -792,7 +792,7 @@ async def schedule_new_poll(chat_id, context, delay):
 async def setup_commands(application):
     """Set up bot commands to be suggested in the Telegram UI."""
     commands = [
-        BotCommand("pol_now", "Начать опрос вручную"),
+        BotCommand("poll_now", "Начать опрос вручную"),
         BotCommand("status", "Проверить статус текущего опроса"),
         BotCommand("stop_poll", "Остановить текущий опрос"),
         BotCommand("link_steam", "Привязать Steam ID"),
