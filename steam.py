@@ -171,7 +171,7 @@ async def check_steam_status(context, steam_api_key, send_poll_func):
             last_poll_end = None
             if chat_id in last_activities:
                 last_poll_end = (
-                    datetime.fromisoformat(last_activities[chat_id])
+                    last_activities[chat_id]
                     if last_activities[chat_id]
                     else None
                 )
