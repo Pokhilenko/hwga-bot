@@ -178,7 +178,7 @@ async def stats_command(update, context):
         if times:
             # Convert times to minutes since midnight
             minutes_list = []
-            for (time_str,) in times:
+            for time_str in times:
                 hour, minute = map(int, time_str.split(":"))
                 minutes_since_midnight = hour * 60 + minute
                 minutes_list.append(minutes_since_midnight)
