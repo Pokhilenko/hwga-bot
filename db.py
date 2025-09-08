@@ -6,7 +6,7 @@ import traceback
 from contextlib import contextmanager
 from datetime import datetime
 
-from sqlalchemy import create_engine, Column, Integer, String, TIMESTAMP, ForeignKey, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, TIMESTAMP, ForeignKey, Boolean, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 
