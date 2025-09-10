@@ -291,19 +291,14 @@ async def get_steam_player_statuses(chat_id: str, steam_api_key: str):
     try:
         user_steam_ids = {}
         async with db.db_semaphore:
-            with db.safe_db_connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                SELECT usc.telegram_id, usc.steam_id, u.first_name
-                FROM user_steam_chats usc
-                JOIN users u ON usc.telegram_id = u.telegram_id
-                WHERE usc.chat_id = ? AND usc.steam_id IS NOT NULL
-                """,
-                    (chat_id,),
+            with db.get_db_session() as session:
+                steam_users = (
+                    session.query(db.UserSteamChat.telegram_id, db.UserSteamChat.steam_id, db.User.first_name)
+                    .join(db.User, db.User.telegram_id == db.UserSteamChat.telegram_id)
+                    .filter(db.UserSteamChat.chat_id == chat_id)
+                    .filter(db.UserSteamChat.steam_id.isnot(None))
+                    .all()
                 )
-
-                steam_users = cursor.fetchall()
 
         logger.info(
             f"Found {len(steam_users)} users with linked Steam IDs in chat {chat_id}"
