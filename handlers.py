@@ -11,7 +11,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Forbidden
 
 import db
 import scheduler
@@ -20,7 +20,7 @@ import steam
 from poll_state import poll_state
 import config
 from exceptions import DatabaseError, SteamApiError
-from decorators import update_chat_name_decorator
+from decorators import update_chat_name_decorator, admin_only
 
 # Configure logging
 logging.basicConfig(
@@ -219,7 +219,7 @@ async def stats_command(update, context):
 
             stats_message += config.MSG_STATS_URL_BUTTON
 
-            # Создаем inline кнопку с ссылкой
+            # Создаем inline кнопку со ссылкой
             keyboard = [
                 [InlineKeyboardButton("Открыть детальную статистику", url=stats_url)]
             ]
@@ -303,6 +303,27 @@ async def get_poll_time_command(update, context):
     except DatabaseError as e:
         logger.error(f"Database error in get_poll_time_command: {e}")
         await update.message.reply_text("Произошла ошибка базы данных. Попробуйте позже.")
+
+
+@admin_only
+@update_chat_name_decorator
+async def pause_polls_command(update, context):
+    """Pause the next n polls for this chat."""
+    chat_id = str(update.effective_chat.id)
+
+    try:
+        n_polls = int(context.args[0]) if context.args else 1
+    except (IndexError, ValueError):
+        await update.message.reply_text("Please provide a valid number of polls to pause. Usage: /pause_polls <n>")
+        return
+
+    if n_polls <= 0:
+        await update.message.reply_text("Please provide a positive number of polls to pause.")
+        return
+
+    await db.set_paused_polls(chat_id, n_polls)
+
+    await update.message.reply_text(f"Okay, I will pause the next {n_polls} poll(s) for this chat.")
 
 
 @update_chat_name_decorator
@@ -599,6 +620,14 @@ async def send_poll(chat_id, context, message, manual=False):
 
         # Save the final task (it will cancel and replace any previous tasks)
         poll_state.set_task(chat_id, poll_timeout)
+    except Forbidden as e:
+        if "bot was blocked by the user" in str(e):
+            logger.warning(f"Bot was blocked in chat {chat_id}. Disabling future polls for this chat.")
+            scheduler.cancel_poll_for_chat(context.job_queue, chat_id)
+            await db.remove_poll_time(chat_id)
+        else:
+            logger.error(f"Forbidden error in send_poll: {e}", exc_info=True)
+            raise
     except (BadRequest, DatabaseError) as e:
         logger.error(f"Error in send_poll: {e}", exc_info=True)
 
@@ -801,6 +830,7 @@ async def setup_commands(application):
         BotCommand("stats", "Статистика опросов"),
         BotCommand("set_poll_time", "Установить время опроса (ЧЧ:ММ)"),
         BotCommand("get_poll_time", "Показать установленное время опроса"),
+        BotCommand("pause_polls", "Пропустить следующие n опросов"),
     ]
 
     # Set commands globally

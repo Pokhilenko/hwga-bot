@@ -117,12 +117,24 @@ async def daily_poll(context, send_poll_func):
     )
 
     for chat_id in registered_chats:
+        paused_count = await db.get_paused_polls(chat_id)
+        if paused_count > 0:
+            await db.decrement_paused_polls(chat_id)
+            logger.info(f"Skipping poll for chat {chat_id} because it is paused. Remaining paused polls: {paused_count - 1}")
+            continue
+
         if not poll_state.is_active(chat_id):
             await send_poll_func(chat_id, context, "Ah shit, here we go again!")
 
 
 async def custom_poll(context, send_poll_func, chat_id):
     """Send custom poll for a specific chat at the configured time."""
+    paused_count = await db.get_paused_polls(chat_id)
+    if paused_count > 0:
+        await db.decrement_paused_polls(chat_id)
+        logger.info(f"Skipping poll for chat {chat_id} because it is paused. Remaining paused polls: {paused_count - 1}")
+        return
+
     logger.info(f"Running custom poll for chat {chat_id} at {datetime.now()}")
 
     if not poll_state.is_active(chat_id):
@@ -161,4 +173,19 @@ async def reschedule_poll_for_chat(job_queue, chat_id, send_poll_func):
         return True
     except Exception as e:
         logger.error(f"Error rescheduling custom poll for chat {chat_id}: {e}")
+        return False
+
+
+def cancel_poll_for_chat(job_queue, chat_id):
+    """Cancels the scheduled poll for a specific chat."""
+    job_name_prefix = f"custom_poll_{chat_id}_"
+    jobs_to_remove = [job for job in job_queue.jobs() if job.name and job.name.startswith(job_name_prefix)]
+
+    if jobs_to_remove:
+        for job in jobs_to_remove:
+            job.schedule_removal()
+            logger.info(f"Canceled poll job '{job.name}' for chat {chat_id}")
+        return True
+    else:
+        logger.warning(f"No poll found to cancel for chat {chat_id}")
         return False

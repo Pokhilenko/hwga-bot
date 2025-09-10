@@ -50,3 +50,25 @@ def update_chat_name_decorator(func):
         return await func(*args, **kwargs)
 
     return wrapper
+
+
+def admin_only(func):
+    """Decorator to check if the user is an admin in a group chat."""
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        if not update.effective_chat or update.effective_chat.type == 'private':
+            # No admin check needed in private chats
+            return await func(update, context, *args, **kwargs)
+
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        admins = await context.bot.get_chat_administrators(chat_id)
+        admin_ids = {admin.user.id for admin in admins}
+
+        if user_id not in admin_ids:
+            await update.message.reply_text("You must be an admin to use this command.")
+            return
+
+        return await func(update, context, *args, **kwargs)
+    return wrapper

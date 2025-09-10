@@ -45,6 +45,7 @@ def main():
     application.add_handler(
         CommandHandler("get_poll_time", handlers.get_poll_time_command)
     )
+    application.add_handler(CommandHandler("pause_polls", handlers.pause_polls_command))
 
     # Register Steam-related command handlers
     application.add_handler(CommandHandler("link_steam", handlers.link_steam_command))

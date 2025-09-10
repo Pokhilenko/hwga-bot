@@ -66,6 +66,7 @@ class ChatSettings(Base):
     chat_id = Column(String, primary_key=True)
     poll_time = Column(String, default="15:30")
     chat_name = Column(String)
+    paused_polls_count = Column(Integer, default=0)
 
 
 class UserSteamChat(Base):
@@ -352,6 +353,18 @@ async def set_poll_time(chat_id, poll_time):
             return True
 
 
+async def remove_poll_time(chat_id):
+    """Remove custom poll time for a chat."""
+    async with db_semaphore:
+        with get_db_session() as session:
+            chat_settings = (
+                session.query(ChatSettings).filter(ChatSettings.chat_id == str(chat_id)).first()
+            )
+            if chat_settings:
+                session.delete(chat_settings)
+            return True
+
+
 async def get_poll_time(chat_id):
     """Get custom poll time for a chat"""
     async with db_semaphore:
@@ -377,6 +390,42 @@ async def get_all_chat_poll_times():
                     ChatSettings.chat_id, ChatSettings.poll_time
                 ).all()
             }
+
+
+async def set_paused_polls(chat_id, count):
+    """Set the number of polls to pause for a chat."""
+    async with db_semaphore:
+        with get_db_session() as session:
+            chat_settings = (
+                session.query(ChatSettings).filter(ChatSettings.chat_id == str(chat_id)).first()
+            )
+            if chat_settings:
+                chat_settings.paused_polls_count = count
+            else:
+                chat_settings = ChatSettings(chat_id=str(chat_id), paused_polls_count=count)
+                session.add(chat_settings)
+            return True
+
+
+async def get_paused_polls(chat_id):
+    """Get the number of paused polls for a chat."""
+    async with db_semaphore:
+        with get_db_session() as session:
+            chat_settings = (
+                session.query(ChatSettings).filter(ChatSettings.chat_id == str(chat_id)).first()
+            )
+            return chat_settings.paused_polls_count if chat_settings else 0
+
+
+async def decrement_paused_polls(chat_id):
+    """Decrement the paused polls count for a chat."""
+    async with db_semaphore:
+        with get_db_session() as session:
+            chat_settings = (
+                session.query(ChatSettings).filter(ChatSettings.chat_id == str(chat_id)).first()
+            )
+            if chat_settings and chat_settings.paused_polls_count > 0:
+                chat_settings.paused_polls_count -= 1
 
 
 async def register_user(user):
