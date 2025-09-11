@@ -38,6 +38,13 @@ async def setup_jobs(job_queue, send_poll_func, steam_api_key):
     # Store the job reference
     poll_state.set_steam_check_task(steam_check_job)
 
+    # Set up Dota 2 game checker
+    dota_game_check_job = job_queue.run_repeating(
+        lambda ctx: steam.check_and_store_dota_games(ctx, steam_api_key),
+        interval=15 * 60,  # Check every 15 minutes
+        first=0,  # Start immediately
+    )
+
     logger.info("Scheduled jobs set up successfully")
 
 

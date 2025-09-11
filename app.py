@@ -55,6 +55,7 @@ def main():
     application.add_handler(
         CommandHandler("who_is_playing", handlers.who_is_playing_command)
     )
+    application.add_handler(CommandHandler("games_stat", handlers.games_stat_command))
 
     # Register callback query handlers
     application.add_handler(

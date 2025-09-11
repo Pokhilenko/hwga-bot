@@ -16,6 +16,7 @@ The project is structured into several modules:
 -   `steam.py`: Handles interactions with the Steam API.
 -   `web_server.py`: A web server to display poll statistics.
 -   `who_is_online.py`: A script to check which Steam users are currently online.
+-   `summary.py`: Generates a summary of Dota 2 matches using the Gemini API.
 
 ## Key Features
 
@@ -23,6 +24,8 @@ The project is structured into several modules:
 -   **Steam Integration:** Users can link their Steam accounts to the bot.
     -   The bot can check which users in a chat are currently playing Dota 2.
     -   The bot can be configured to automatically send a notification when someone starts playing Dota 2.
+-   **Automated Post-Game Summary:** After a poll, if a group of users from the chat play a Dota 2 match together, the bot automatically posts a summary of the match results when it's over.
+-   **/games_stat Command:** A command to see historical match statistics for the chat.
 -   **Poll Statistics:** The bot tracks poll results and provides statistics via a command and a web interface.
 -   **Customizable Poll Time:** The time for the daily poll can be set on a per-chat basis.
 -   **Russian Slang:** The bot uses a specific Russian slang term ("сасать") in its polls and messages, which is a key part of its identity.
@@ -34,6 +37,7 @@ The project is structured into several modules:
 -   `/status`: Shows the status of the current poll.
 -   `/stop_poll`: Stops the current poll.
 -   `/stats`: Displays poll statistics.
+-   `/games_stat`: Displays games statistics.
 -   `/set_poll_time HH:MM`: Sets the time for the daily poll (in GMT+6).
 -   `/get_poll_time`: Shows the currently configured poll time.
 -   `/link_steam`: Initiates the process of linking a Steam account.
@@ -53,7 +57,7 @@ I have made the following architectural improvements to the project:
 ## Notes
 
 -   The bot's language and theme are informal and use Russian slang. This is an intentional design choice.
--   The bot requires a `BOT_TOKEN` and a `STEAM_API_KEY` to be set as environment variables to function correctly.
+-   The bot requires a `BOT_TOKEN`, a `STEAM_API_KEY` and a `GEMINI_API_KEY` to be set as environment variables to function correctly.
 -   The bot uses an SQLite database (`poll_bot.db`) to store its data.
 
 ## Deployment
@@ -67,7 +71,8 @@ To test the bot on a Raspberry Pi 3, follow these steps:
 3.  Navigate to the project directory: `cd Projects/hwga-bot`
 4.  Pull the latest changes from the `main` branch: `git pull`
 5.  Install/update the dependencies: `pip install -r requirements.txt`
-6.  Restart the bot service: `sudo systemctl restart hwga-bot`
-7.  Check the logs to ensure the bot is running correctly: `sudo journalctl -u hwga-bot -f`
+6.  Run database migrations: `alembic upgrade head`
+7.  Restart the bot service: `sudo systemctl restart hwga-bot`
+8.  Check the logs to ensure the bot is running correctly: `sudo journalctl -u hwga-bot -f`
 
 **Important:** Do not push any changes from the Raspberry Pi.

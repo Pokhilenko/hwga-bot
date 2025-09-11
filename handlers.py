@@ -828,6 +828,7 @@ async def setup_commands(application):
         BotCommand("unlink_steam", "Отвязать Steam ID"),
         BotCommand("who_is_playing", "Показать кто играет в Dota 2"),
         BotCommand("stats", "Статистика опросов"),
+        BotCommand("games_stat", "Статистика игр"),
         BotCommand("set_poll_time", "Установить время опроса (ЧЧ:ММ)"),
         BotCommand("get_poll_time", "Показать установленное время опроса"),
         BotCommand("pause_polls", "Пропустить следующие n опросов"),
@@ -875,3 +876,42 @@ async def who_is_playing_command(update, context):
         await update.message.reply_text(
             config.MSG_WHO_IS_PLAYING_ERROR.format(error=str(e))
         )
+
+
+@update_chat_name_decorator
+async def games_stat_command(update, context):
+    """Display games statistics."""
+    chat_id = str(update.effective_chat.id)
+    try:
+        days = int(context.args[0]) if context.args else 7
+    except (IndexError, ValueError):
+        await update.message.reply_text("Please provide a valid number of days. Usage: /games_stat <days>")
+        return
+
+    try:
+        stats = await db.get_games_stats(chat_id, days)
+        if not stats:
+            await update.message.reply_text(f"No game stats found for the last {days} days.")
+            return
+
+        total_matches = len(stats)
+        wins = 0
+        for match in stats:
+            # Assuming the bot is playing on the radiant side
+            if match.winner == 'radiant':
+                wins += 1
+        
+        win_percentage = (wins / total_matches) * 100 if total_matches > 0 else 0
+        
+        stats_message = f"""
+        Games Stats for the last {days} days:
+        Total matches: {total_matches}
+        Wins: {wins}
+        Losses: {total_matches - wins}
+        Win percentage: {win_percentage:.2f}%
+        """
+        
+        await update.message.reply_text(stats_message)
+    except DatabaseError as e:
+        logger.error(f"Database error in games_stat_command: {e}")
+        await update.message.reply_text("A database error occurred. Please try again later.")

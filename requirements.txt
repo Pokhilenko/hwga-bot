@@ -5,3 +5,4 @@ pytz
 aiohttp
 sqlalchemy
 alembic
+google-generativeai

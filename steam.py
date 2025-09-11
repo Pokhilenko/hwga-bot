@@ -7,6 +7,8 @@ import aiohttp
 import db
 from poll_state import poll_state
 from exceptions import SteamApiError
+import summary
+import config
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -406,3 +408,85 @@ async def get_steam_player_statuses(chat_id: str, steam_api_key: str):
     except Exception as e:
         logger.error(f"Error getting user statuses: {e}")
         return f"❌ Произошла непредвиденная ошибка: {str(e)}"
+
+
+async def get_match_details(match_id, steam_api_key):
+    """Get details of a Dota 2 match."""
+    if not steam_api_key:
+        raise SteamApiError("Steam API key not set, cannot get match details")
+
+    url = f"https://api.steampowered.com/IDOTA2Match_570/GetMatchDetails/V001/?key={steam_api_key}&match_id={match_id}"
+    logger.info(f"Sending Steam API request for match details for match ID {match_id}")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    raise SteamApiError(f"Steam API returned status {response.status} when getting match details")
+                return await response.json()
+    except aiohttp.ClientError as e:
+        raise SteamApiError(f"Error in Steam API request when getting match details: {e}")
+
+
+async def get_player_dota_stats(steam_id, steam_api_key):
+    """Get player's Dota 2 stats, including current match ID."""
+    if not steam_api_key:
+        raise SteamApiError("Steam API key not set, cannot get player Dota 2 stats")
+
+    url = f"https://api.steampowered.com/IDOTA2Match_570/GetMatchHistory/V001/?key={steam_api_key}&account_id={steam_id}"
+    logger.info(f"Sending Steam API request for player Dota 2 stats for Steam ID {steam_id}")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    raise SteamApiError(f"Steam API returned status {response.status} when getting player Dota 2 stats")
+                data = await response.json()
+                if data.get("result", {}).get("status") == 15:
+                    return None # Private profile
+                return data
+    except aiohttp.ClientError as e:
+        raise SteamApiError(f"Error in Steam API request when getting player Dota 2 stats: {e}")
+
+
+import summary
+import config
+
+async def check_and_store_dota_games(context, steam_api_key):
+    """Check for and store Dota 2 games."""
+    logger.info("Checking for Dota 2 games...")
+    for chat_id, poll_data in poll_state.active_polls.items():
+        if not poll_data.get("votes"):
+            continue
+
+        accepted_users = []
+        for user_id, vote_data in poll_data["votes"].items():
+            if vote_data["option"] in config.CATEGORY_MAPPING["accepted"]:
+                user_info = await db.get_user_info(user_id)
+                if user_info and user_info["steam_id"]:
+                    accepted_users.append(user_info["steam_id"])
+
+        if len(accepted_users) < 2:
+            continue
+
+        try:
+            match_ids = set()
+            for steam_id in accepted_users:
+                stats = await get_player_dota_stats(steam_id, steam_api_key)
+                if stats and stats.get("result", {}).get("matches"):
+                    match_ids.add(stats["result"]["matches"][0]["match_id"])
+
+            if len(match_ids) == 1:
+                match_id = match_ids.pop()
+                match_details = await get_match_details(match_id, steam_api_key)
+                if match_details:
+                    winner = "radiant" if match_details["result"]["radiant_win"] else "dire"
+                    radiant_players = [p["account_id"] for p in match_details["result"]["players"] if p["player_slot"] < 128]
+                    dire_players = [p["account_id"] for p in match_details["result"]["players"] if p["player_slot"] >= 128]
+                    await db.store_match(match_id, chat_id, winner, ",".join(map(str, radiant_players)), ",".join(map(str, dire_players)))
+                    
+                    summary_text = await summary.generate_summary(match_details)
+                    await context.bot.send_message(chat_id=chat_id, text=summary_text)
+
+        except SteamApiError as e:
+            logger.error(f"Error checking for Dota 2 games: {e}")

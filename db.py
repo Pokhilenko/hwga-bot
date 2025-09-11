@@ -78,6 +78,17 @@ class UserSteamChat(Base):
     created_at = Column(TIMESTAMP, default=datetime.now)
 
 
+class Match(Base):
+    __tablename__ = "matches"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    match_id = Column(String, unique=True, nullable=False)
+    chat_id = Column(String, nullable=False)
+    winner = Column(String, nullable=False)
+    radiant_players = Column(String)
+    dire_players = Column(String)
+    created_at = Column(TIMESTAMP, default=datetime.now)
+
+
 # Global semaphore for database access
 db_semaphore = asyncio.Semaphore(1)
 
@@ -508,3 +519,24 @@ async def remove_personal_chat_settings():
                 logger.info(f"Удалены данные для личного чата {chat_id[0]}")
 
             return True
+
+
+async def store_match(match_id, chat_id, winner, radiant_players, dire_players):
+    """Store a match in the database."""
+    async with db_semaphore:
+        with get_db_session() as session:
+            match = Match(
+                match_id=match_id,
+                chat_id=chat_id,
+                winner=winner,
+                radiant_players=radiant_players,
+                dire_players=dire_players,
+            )
+            session.add(match)
+
+
+async def get_games_stats(chat_id, days):
+    """Get games statistics for a chat."""
+    async with db_semaphore:
+        with get_db_session() as session:
+            return session.query(Match).filter(Match.chat_id == str(chat_id)).all()
