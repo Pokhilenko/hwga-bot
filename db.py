@@ -6,7 +6,7 @@ import traceback
 from contextlib import contextmanager
 from datetime import datetime
 
-from sqlalchemy import create_engine, Column, Integer, String, TIMESTAMP, ForeignKey, Boolean, func
+from sqlalchemy import create_engine, Column, Integer, String, TIMESTAMP, ForeignKey, Boolean, func, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 
@@ -535,8 +535,20 @@ async def store_match(match_id, chat_id, winner, radiant_players, dire_players):
             session.add(match)
 
 
-async def get_games_stats(chat_id, days):
-    """Get games statistics for a chat."""
+async def get_games_stats(chat_id, days, user_id=None):
+    """Get games statistics for a chat or a user."""
     async with db_semaphore:
         with get_db_session() as session:
-            return session.query(Match).filter(Match.chat_id == str(chat_id)).all()
+            if user_id:
+                user = session.query(User).filter(User.telegram_id == str(user_id)).first()
+                if user and user.steam_id:
+                    return session.query(Match).filter(
+                        or_(
+                            Match.radiant_players.contains(user.steam_id),
+                            Match.dire_players.contains(user.steam_id)
+                        )
+                    ).all()
+                else:
+                    return []
+            else:
+                return session.query(Match).filter(Match.chat_id == str(chat_id)).all()

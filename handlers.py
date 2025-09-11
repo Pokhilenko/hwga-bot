@@ -882,6 +882,9 @@ async def who_is_playing_command(update, context):
 async def games_stat_command(update, context):
     """Display games statistics."""
     chat_id = str(update.effective_chat.id)
+    user_id = update.effective_user.id
+    is_private_chat = update.effective_chat.type == 'private'
+
     try:
         days = int(context.args[0]) if context.args else 7
     except (IndexError, ValueError):
@@ -889,7 +892,11 @@ async def games_stat_command(update, context):
         return
 
     try:
-        stats = await db.get_games_stats(chat_id, days)
+        if is_private_chat:
+            stats = await db.get_games_stats(chat_id, days, user_id=user_id)
+        else:
+            stats = await db.get_games_stats(chat_id, days)
+
         if not stats:
             await update.message.reply_text(f"No game stats found for the last {days} days.")
             return
