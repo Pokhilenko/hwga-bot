@@ -89,6 +89,14 @@ class Match(Base):
     created_at = Column(TIMESTAMP, default=datetime.now)
 
 
+class GameParticipant(Base):
+    __tablename__ = "game_participants"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(String, nullable=False)
+    user_id = Column(String, nullable=False)
+    poll_end_time = Column(TIMESTAMP, default=datetime.now)
+
+
 # Global semaphore for database access
 db_semaphore = asyncio.Semaphore(1)
 
@@ -554,3 +562,30 @@ async def get_games_stats(chat_id, days, user_id=None):
                     return []
             else:
                 return session.query(Match).filter(Match.chat_id == str(chat_id), Match.created_at >= time_filter).all()
+
+
+async def store_game_participants(chat_id, user_ids):
+    """Store game participants in the database."""
+    async with db_semaphore:
+        with get_db_session() as session:
+            for user_id in user_ids:
+                participant = GameParticipant(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                )
+                session.add(participant)
+
+
+async def get_game_participants():
+    """Get game participants from the database."""
+    async with db_semaphore:
+        with get_db_session() as session:
+            return session.query(GameParticipant).all()
+
+
+async def delete_game_participants(chat_id):
+    """Delete game participants from the database."""
+    async with db_semaphore:
+        with get_db_session() as session:
+            session.query(GameParticipant).filter(GameParticipant.chat_id == chat_id).delete()
+

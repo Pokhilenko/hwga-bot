@@ -805,6 +805,11 @@ async def process_poll_results(chat_id, context):
         # Send result message
         await context.bot.send_message(chat_id=chat_id, text=result_message)
 
+        # Store participants for game checking
+        if categories["accepted"]:
+            user_ids = [vote["user"].id for vote in votes.values() if vote["option"] in config.CATEGORY_MAPPING["accepted"]]
+            await db.store_game_participants(chat_id, user_ids)
+
         # Close the poll in our state
         await poll_state.close_poll(chat_id)
     except (BadRequest, DatabaseError) as e:

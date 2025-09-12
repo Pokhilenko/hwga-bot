@@ -455,23 +455,33 @@ import config
 async def check_and_store_dota_games(context, steam_api_key):
     """Check for and store Dota 2 games."""
     logger.info("Checking for Dota 2 games...")
-    for chat_id, poll_data in poll_state.active_polls.items():
-        if not poll_data.get("votes"):
+    participants = await db.get_game_participants()
+    if not participants:
+        return
+
+    # Group participants by chat
+    chat_participants = {}
+    for p in participants:
+        if p.chat_id not in chat_participants:
+            chat_participants[p.chat_id] = []
+        chat_participants[p.chat_id].append(p.user_id)
+
+    for chat_id, user_ids in chat_participants.items():
+        if len(user_ids) < 2:
             continue
 
-        accepted_users = []
-        for user_id, vote_data in poll_data["votes"].items():
-            if vote_data["option"] in config.CATEGORY_MAPPING["accepted"]:
-                user_info = await db.get_user_info(user_id)
-                if user_info and user_info["steam_id"]:
-                    accepted_users.append(user_info["steam_id"])
+        steam_ids = []
+        for user_id in user_ids:
+            user_info = await db.get_user_info(user_id)
+            if user_info and user_info["steam_id"]:
+                steam_ids.append(user_info["steam_id"])
 
-        if len(accepted_users) < 2:
+        if len(steam_ids) < 2:
             continue
 
         try:
             match_ids = set()
-            for steam_id in accepted_users:
+            for steam_id in steam_ids:
                 stats = await get_player_dota_stats(steam_id, steam_api_key)
                 if stats and stats.get("result", {}).get("matches"):
                     match_ids.add(stats["result"]["matches"][0]["match_id"])
@@ -487,6 +497,9 @@ async def check_and_store_dota_games(context, steam_api_key):
                     
                     summary_text = await summary.generate_summary(match_details)
                     await context.bot.send_message(chat_id=chat_id, text=summary_text)
+
+                    # Clean up participants
+                    await db.delete_game_participants(chat_id)
 
         except SteamApiError as e:
             logger.error(f"Error checking for Dota 2 games: {e}")
