@@ -884,6 +884,7 @@ async def games_stat_command(update, context):
     chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
     is_private_chat = update.effective_chat.type == 'private'
+    logger.info(f"games_stat_command called in {'private' if is_private_chat else 'group'} chat {chat_id} by user {user_id}")
 
     try:
         days = int(context.args[0]) if context.args else 7
@@ -896,6 +897,8 @@ async def games_stat_command(update, context):
             stats = await db.get_games_stats(chat_id, days, user_id=user_id)
         else:
             stats = await db.get_games_stats(chat_id, days)
+
+        logger.info(f"Found {len(stats)} matches for chat {chat_id} in the last {days} days.")
 
         if not stats:
             await update.message.reply_text(f"No game stats found for the last {days} days.")
@@ -922,3 +925,6 @@ async def games_stat_command(update, context):
     except DatabaseError as e:
         logger.error(f"Database error in games_stat_command: {e}")
         await update.message.reply_text("A database error occurred. Please try again later.")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred in games_stat_command: {e}")
+        await update.message.reply_text("An unexpected error occurred. Please try again later.")

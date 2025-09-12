@@ -4,7 +4,7 @@ import os
 import sys
 import traceback
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine, Column, Integer, String, TIMESTAMP, ForeignKey, Boolean, func, or_
 from sqlalchemy.ext.declarative import declarative_base
@@ -539,6 +539,7 @@ async def get_games_stats(chat_id, days, user_id=None):
     """Get games statistics for a chat or a user."""
     async with db_semaphore:
         with get_db_session() as session:
+            time_filter = datetime.now() - timedelta(days=days)
             if user_id:
                 user = session.query(User).filter(User.telegram_id == str(user_id)).first()
                 if user and user.steam_id:
@@ -546,9 +547,10 @@ async def get_games_stats(chat_id, days, user_id=None):
                         or_(
                             Match.radiant_players.contains(user.steam_id),
                             Match.dire_players.contains(user.steam_id)
-                        )
+                        ),
+                        Match.created_at >= time_filter
                     ).all()
                 else:
                     return []
             else:
-                return session.query(Match).filter(Match.chat_id == str(chat_id)).all()
+                return session.query(Match).filter(Match.chat_id == str(chat_id), Match.created_at >= time_filter).all()
