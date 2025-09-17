@@ -616,3 +616,20 @@ async def get_match(match_id):
     async with db_semaphore:
         with get_db_session() as session:
             return session.query(Match).filter(Match.match_id == str(match_id)).first()
+
+
+async def get_user_info_by_steam_id_32(steam_id_32):
+    """Get user information by 32-bit steam ID."""
+    async with db_semaphore:
+        with get_db_session() as session:
+            steam_id_64 = str(int(steam_id_32) + 76561197960265728)
+            user = session.query(User).filter(User.steam_id == steam_id_64).first()
+            if user:
+                return {
+                    "telegram_id": user.telegram_id,
+                    "username": user.username,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                    "steam_id": user.steam_id,
+                }
+            return None

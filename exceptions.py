@@ -8,6 +8,6 @@ class DatabaseError(HwgaBotError):
     """Raised when there is a database error."""
     pass
 
-class SteamApiError(HwgaBotError):
-    """Raised when there is an error with the Steam API."""
+class DotaApiError(HwgaBotError):
+    """Raised when there is an error with the Dota API."""
     pass

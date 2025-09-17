@@ -31,10 +31,6 @@ def main():
         logger.critical("BOT_TOKEN environment variable not set. The bot cannot start.")
         return
 
-    STEAM_API_KEY = os.getenv("STEAM_API_KEY")
-    if not STEAM_API_KEY:
-        logger.warning("STEAM_API_KEY environment variable not set. Steam-related features will not work.")
-
     # Create the Telegram Application
     application = ApplicationBuilder().token(TOKEN).build()
 
@@ -95,7 +91,7 @@ def main():
     # Set up the job queue for sending polls and checking Steam status
     application.job_queue.run_once(
         lambda ctx: asyncio.create_task(
-            setup_jobs(application.job_queue, handlers.send_poll, STEAM_API_KEY)
+            setup_jobs(application.job_queue, handlers.send_poll)
         ),
         0,
     )

@@ -10,7 +10,7 @@ import steam
 logger = logging.getLogger(__name__)
 
 
-async def setup_jobs(job_queue, send_poll_func, steam_api_key):
+async def setup_jobs(job_queue, send_poll_func):
     """Set up scheduled jobs"""
 
     # Determine if any custom poll times are configured
@@ -23,25 +23,15 @@ async def setup_jobs(job_queue, send_poll_func, steam_api_key):
             lambda ctx: daily_poll(ctx, send_poll_func),
             time=target_time,
             days=(0, 1, 2, 3, 4, 5, 6),
+            name="daily_poll",
         )
     else:
         # Set up custom poll times for each chat
         await setup_custom_poll_times(job_queue, send_poll_func, chat_times)
 
-    # Set up Steam status checker - run hourly
-    steam_check_job = job_queue.run_repeating(
-        lambda ctx: steam.check_steam_status(ctx, steam_api_key, send_poll_func),
-        interval=60 * 60,  # Check every hour
-        first=0,  # Start immediately
-        name="steam_status_check",
-    )
-
-    # Store the job reference
-    poll_state.set_steam_check_task(steam_check_job)
-
     # Set up Dota 2 game checker
     dota_game_check_job = job_queue.run_repeating(
-        lambda ctx: steam.check_and_store_dota_games(ctx, steam_api_key),
+        lambda ctx: steam.check_and_store_dota_games(ctx),
         interval=15 * 60,  # Check every 15 minutes
         first=0,  # Start immediately
         name="dota_game_check",

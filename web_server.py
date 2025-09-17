@@ -28,7 +28,6 @@ PORT = DEV_PORT if DEV_MODE else PROD_PORT
 
 # Steam OpenID configuration
 STEAM_OPENID_URL = "https://steamcommunity.com/openid/login"
-STEAM_API_KEY = os.environ.get("STEAM_API_KEY", "")
 
 # Storage for temporary states and telegram_id <-> session code mappings
 steam_auth_sessions = {}  # session_id -> (telegram_id, chat_id)
@@ -1391,24 +1390,6 @@ async def steam_callback_handler(request):
                         f"Steam OpenID verification failed: {verification_result}"
                     )
                     return web.HTTPFound("/auth/steam/cancel")
-
-        # Get user info from Steam API
-        if STEAM_API_KEY:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    api_url = f"https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key={STEAM_API_KEY}&steamids={steam_id}"
-                    async with session.get(api_url) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            players = data.get("response", {}).get("players", [])
-                            if players:
-                                player = players[0]
-                                steam_username = player.get("personaname", "Unknown")
-                                logger.info(
-                                    f"Steam user: {steam_username}, ID: {steam_id}"
-                                )
-            except Exception as e:
-                logger.error(f"Error getting Steam user info: {e}")
 
         # Find the associated Telegram ID
         # Since we can't store session in the browser easily for this use case,

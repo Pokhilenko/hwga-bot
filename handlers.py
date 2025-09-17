@@ -19,7 +19,7 @@ import web_server
 import steam
 from poll_state import poll_state
 import config
-from exceptions import DatabaseError, SteamApiError
+from exceptions import DatabaseError, DotaApiError
 from decorators import update_chat_name_decorator, admin_only
 
 # Configure logging
@@ -429,32 +429,24 @@ async def unlink_steam_command(update, context):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Get the Steam API key from environment variables
-        steam_api_key = os.environ.get("STEAM_API_KEY")
-
         message_text = ""
 
-        if steam_api_key:
-            # Get profile information for display
-            profile_data = await steam.verify_steam_id(steam_id, steam_api_key)
+        # Get profile information for display
+        profile_data = await steam.verify_steam_id(steam_id)
 
-            if profile_data:
-                steam_name = profile_data["username"]
-                profile_url = profile_data["profile_url"]
+        if profile_data:
+            steam_name = profile_data["username"]
+            profile_url = profile_data["profile_url"]
 
-                message_text = config.MSG_UNLINK_STEAM_CONFIRM.format(
-                    chat_name=chat_name, steam_id=steam_id, steam_name=steam_name
-                )
+            message_text = config.MSG_UNLINK_STEAM_CONFIRM.format(
+                chat_name=chat_name, steam_id=steam_id, steam_name=steam_name
+            )
 
-                # Add a button to go to the profile
-                keyboard.insert(
-                    0, [InlineKeyboardButton("Просмотреть профиль", url=profile_url)]
-                )
-                reply_markup = InlineKeyboardMarkup(keyboard)
-            else:
-                message_text = config.MSG_UNLINK_STEAM_CONFIRM_NO_PROFILE.format(
-                    steam_id=steam_id, chat_name=chat_name
-                )
+            # Add a button to go to the profile
+            keyboard.insert(
+                0, [InlineKeyboardButton("Просмотреть профиль", url=profile_url)]
+            )
+            reply_markup = InlineKeyboardMarkup(keyboard)
         else:
             message_text = config.MSG_UNLINK_STEAM_CONFIRM_NO_PROFILE.format(
                 steam_id=steam_id, chat_name=chat_name
@@ -468,7 +460,7 @@ async def unlink_steam_command(update, context):
         logger.info(
             f"User {user.first_name} ({user_id}) requested to unlink Steam ID {steam_id} from chat {chat_id}"
         )
-    except (DatabaseError, SteamApiError) as e:
+    except (DatabaseError, DotaApiError) as e:
         logger.error(f"Error in unlink_steam_command: {e}")
         await update.message.reply_text("Произошла ошибка. Попробуйте позже.")
 
@@ -812,6 +804,7 @@ async def process_poll_results(chat_id, context):
         # Store participants for game checking
         if categories["accepted"]:
             user_ids = [vote["user"].id for vote in votes.values() if vote["option"] in config.CATEGORY_MAPPING["accepted"]]
+            logger.info(f"Storing {len(user_ids)} game participants for chat {chat_id}.")
             await db.store_game_participants(chat_id, user_ids)
 
         # Close the poll in our state
@@ -872,16 +865,10 @@ async def who_is_playing_command(update, context):
             reply_to_message_id=update.message.message_id,
         )
 
-        # Get the Steam API key
-        steam_api_key = os.environ.get("STEAM_API_KEY")
-        if not steam_api_key:
-            await status_message.edit_text(config.MSG_STEAM_API_KEY_MISSING)
-            return
-
-        status_text = await steam.get_steam_player_statuses(chat_id, steam_api_key)
+        status_text = await steam.get_steam_player_statuses(chat_id)
         await status_message.edit_text(status_text)
 
-    except (BadRequest, DatabaseError, SteamApiError) as e:
+    except (BadRequest, DatabaseError, DotaApiError) as e:
         logger.error(f"Error in who_is_playing_command: {e}")
         await update.message.reply_text(
             config.MSG_WHO_IS_PLAYING_ERROR.format(error=str(e))
@@ -979,9 +966,7 @@ async def refresh_games_stat_command(update, context):
 
     await query.edit_message_text("Refreshing game stats...")
 
-    steam_api_key = os.environ.get("STEAM_API_KEY")
-    if steam_api_key:
-        await steam.check_and_store_dota_games(context, steam_api_key)
+    await steam.check_and_store_dota_games(context)
     
     stats_message, reply_markup = await _build_games_stat_message(chat_id, days, user_id if is_private_chat else None)
     await query.edit_message_text(stats_message, reply_markup=reply_markup)
@@ -1000,9 +985,4 @@ async def check_games_command(update, context):
 
     await update.message.reply_text(f"Checking for common games in the last {days} days. This might take a while...")
 
-    steam_api_key = os.environ.get("STEAM_API_KEY")
-    if not steam_api_key:
-        await update.message.reply_text(config.MSG_STEAM_API_KEY_MISSING)
-        return
-
-    await steam.check_games_on_demand(context, chat_id, days, steam_api_key)
+    await steam.check_games_on_demand(context, chat_id, days)
