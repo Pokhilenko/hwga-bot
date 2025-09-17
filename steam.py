@@ -91,7 +91,6 @@ async def get_steam_player_statuses(chat_id: str):
                             offline_players.append(data["profile"]["personaname"])
                 else:
                     logger.warning(f"No OpenDota user data for {steam_id_32}")
-                    # Find the user's name from the database
                     user_info = await db.get_user_info_by_steam_id_32(steam_id_32)
                     if user_info:
                         offline_players.append(user_info["first_name"])
@@ -122,16 +121,15 @@ async def get_steam_player_statuses(chat_id: str):
 
 
 async def check_and_store_dota_games(context):
-    """Check for and store Dota 2 games."""
-    logger.info("Checking for Dota 2 games...")
+    """Check for and store Dota 2 games based on poll participants."""
+    logger.info("Checking for Dota 2 games from polls...")
     participants = await db.get_game_participants()
     if not participants:
-        logger.info("No game participants found.")
+        logger.info("No game participants from recent polls found.")
         return
 
-    logger.info(f"Found {len(participants)} game participants.")
+    logger.info(f"Found {len(participants)} game participants from polls.")
 
-    # Group participants by chat
     chat_participants = {}
     for p in participants:
         if p.chat_id not in chat_participants:
@@ -139,103 +137,82 @@ async def check_and_store_dota_games(context):
         chat_participants[p.chat_id].append(p)
 
     for chat_id, participant_group in chat_participants.items():
-        logger.info(f"Checking chat {chat_id} with {len(participant_group)} participants.")
         if len(participant_group) < 2:
             continue
 
         user_ids = [p.user_id for p in participant_group]
-        steam_ids_32 = await db.get_chat_steam_ids_32(chat_id)
+        steam_ids_32 = [convert_steamid_64_to_32(user.steam_id) for user in (await asyncio.gather(*[db.get_user_info(uid) for uid in user_ids])) if user and user.get("steam_id")]
 
-        logger.info(f"Found {len(steam_ids_32)} steam_ids for chat {chat_id}: {steam_ids_32}")
         if len(steam_ids_32) < 2:
             continue
 
-        try:
-            all_matches = []
-            for steam_id_32 in steam_ids_32:
-                matches = await get_player_dota_stats(steam_id_32, limit=5)
-                if matches:
-                    player_matches = {m["match_id"] for m in matches}
-                    all_matches.append(player_matches)
-                    logger.info(f"Found {len(player_matches)} matches for steam_id {steam_id_32}: {player_matches}")
-
-            if not all_matches:
-                logger.info("No matches found for any participant.")
-                continue
-
-            common_matches = set.intersection(*all_matches)
-            logger.info(f"Found {len(common_matches)} common matches: {common_matches}")
-
-            for match_id in common_matches:
-                if await db.get_match(match_id):
-                    continue
-
-                match_details = await get_match_details(match_id)
-                if match_details:
-                    winner = "radiant" if match_details["radiant_win"] else "dire"
-                    radiant_players = [p["account_id"] for p in match_details["players"] if p["isRadiant"]]
-                    dire_players = [p["account_id"] for p in match_details["players"] if not p["isRadiant"]]
-                    await db.store_match(match_id, chat_id, winner, ",".join(map(str, radiant_players)), ",".join(map(str, dire_players)))
-                    logger.info(f"Stored match {match_id} for chat {chat_id}.")
-                    
-                    summary_text = await summary.generate_summary(match_details)
-                    await context.bot.send_message(chat_id=chat_id, text=summary_text)
-
-                    participant_ids_to_delete = [p.id for p in participant_group]
-                    await db.delete_game_participants(participant_ids_to_delete)
-                    logger.info(f"Deleted {len(participant_ids_to_delete)} game participants for chat {chat_id}.")
-                    break
-
-        except DotaApiError as e:
-            logger.error(f"Error checking for Dota 2 games: {e}")
+        await _find_and_store_common_games(context, chat_id, steam_ids_32, 1)
+        participant_ids_to_delete = [p.id for p in participant_group]
+        await db.delete_game_participants(participant_ids_to_delete)
+        logger.info(f"Deleted {len(participant_ids_to_delete)} game participants for chat {chat_id}.")
 
 
 async def check_games_on_demand(context, chat_id, days):
     """Check for games on demand for all linked users in a chat."""
     logger.info(f"Checking for games on demand in chat {chat_id} for the last {days} days.")
+    user_steam_ids_32 = await db.get_chat_steam_ids_32(chat_id)
+    if len(user_steam_ids_32) < 2:
+        await context.bot.send_message(chat_id=chat_id, text="Not enough users with linked Steam accounts in this chat to check for common games.")
+        return
 
+    await _find_and_store_common_games(context, chat_id, user_steam_ids_32, days)
+
+
+async def _find_and_store_common_games(context, chat_id, steam_ids_32, days):
+    """Find and store common games for a list of players."""
     try:
-        user_steam_ids_32 = await db.get_chat_steam_ids_32(chat_id)
-        if len(user_steam_ids_32) < 2:
-            await context.bot.send_message(chat_id=chat_id, text="Not enough users with linked Steam accounts in this chat to check for common games.")
-            return
-
         time_filter = datetime.now() - timedelta(days=days)
-        all_matches = []
+        player_matches = {}
 
-        for steam_id_32 in user_steam_ids_32:
+        for steam_id_32 in steam_ids_32:
             matches = await get_player_dota_stats(steam_id_32, limit=100)
             if matches:
-                player_matches = {m["match_id"] for m in matches if datetime.fromtimestamp(m["start_time"]) >= time_filter}
-                all_matches.append(player_matches)
-                logger.info(f"Found {len(player_matches)} matches for steam_id {steam_id_32} in the last {days} days.")
+                player_matches[steam_id_32] = {m["match_id"] for m in matches if datetime.fromtimestamp(m["start_time"]) >= time_filter}
 
-        if not all_matches:
-            await context.bot.send_message(chat_id=chat_id, text=f"No matches found for any of the {len(user_steam_ids_32)} linked users in the last {days} days.")
+        if not player_matches:
+            await context.bot.send_message(chat_id=chat_id, text=f"No matches found for any of the {len(steam_ids_32)} linked users in the last {days} days.")
             return
 
-        common_matches = set.intersection(*all_matches)
-        logger.info(f"Found {len(common_matches)} common matches.")
+        match_players = {}
+        for player, matches in player_matches.items():
+            for match_id in matches:
+                if match_id not in match_players:
+                    match_players[match_id] = []
+                match_players[match_id].append(player)
+
+        common_matches = {match_id: players for match_id, players in match_players.items() if len(players) >= 2}
 
         if not common_matches:
-            await context.bot.send_message(chat_id=chat_id, text=f"No common games found between the {len(user_steam_ids_32)} linked users in the last {days} days.")
+            await context.bot.send_message(chat_id=chat_id, text=f"No common games found between the linked users in the last {days} days.")
             return
 
-        stored_matches = 0
-        for match_id in common_matches:
+        stored_matches_count = 0
+        for match_id, players in common_matches.items():
             if await db.get_match(match_id):
                 continue
 
             match_details = await get_match_details(match_id)
             if match_details:
-                winner = "radiant" if match_details["radiant_win"] else "dire"
-                radiant_players = [p["account_id"] for p in match_details["players"] if p["isRadiant"]]
-                dire_players = [p["account_id"] for p in match_details["players"] if not p["isRadiant"]]
+                winner = "radiant" if match_details.get("radiant_win") else "dire"
+                radiant_players = [p["account_id"] for p in match_details["players"] if p.get("isRadiant")]
+                dire_players = [p["account_id"] for p in match_details["players"] if not p.get("isRadiant")]
                 await db.store_match(match_id, chat_id, winner, ",".join(map(str, radiant_players)), ",".join(map(str, dire_players)))
-                stored_matches += 1
-        
-        await context.bot.send_message(chat_id=chat_id, text=f"Found and stored {stored_matches} new common games from the last {days} days.")
+                stored_matches_count += 1
+
+                player_names = []
+                for steam_id_32 in players:
+                    user_info = await db.get_user_info_by_steam_id_32(steam_id_32)
+                    player_names.append(user_info["first_name"] if user_info else f"Unknown({steam_id_32})")
+                
+                await context.bot.send_message(chat_id=chat_id, text=f"Found a game played by {', '.join(player_names)}.")
+
+        await context.bot.send_message(chat_id=chat_id, text=f"Found and stored {stored_matches_count} new common games from the last {days} days.")
 
     except (DotaApiError, DatabaseError) as e:
-        logger.error(f"Error checking for games on demand: {e}")
+        logger.error(f"Error finding and storing common games: {e}")
         await context.bot.send_message(chat_id=chat_id, text=f"An error occurred while checking for games: {e}")
