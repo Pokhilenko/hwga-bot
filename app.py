@@ -61,6 +61,7 @@ def main():
         CommandHandler("who_is_playing", handlers.who_is_playing_command)
     )
     application.add_handler(CommandHandler("games_stat", handlers.games_stat_command))
+    application.add_handler(CommandHandler("check_games", handlers.check_games_command))
 
     # Register callback query handlers
     application.add_handler(

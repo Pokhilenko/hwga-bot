@@ -6,7 +6,7 @@ import aiohttp
 
 import db
 from poll_state import poll_state
-from exceptions import SteamApiError
+from exceptions import SteamApiError, DatabaseError
 import summary
 import config
 
@@ -523,3 +523,56 @@ async def check_and_store_dota_games(context, steam_api_key):
 
         except SteamApiError as e:
             logger.error(f"Error checking for Dota 2 games: {e}")
+
+
+async def check_games_on_demand(context, chat_id, days, steam_api_key):
+    """Check for games on demand for all linked users in a chat."""
+    logger.info(f"Checking for games on demand in chat {chat_id} for the last {days} days.")
+
+    try:
+        # Get all linked steam users in the chat
+        user_steam_ids_32 = await db.get_chat_steam_ids_32(chat_id)
+        if len(user_steam_ids_32) < 2:
+            await context.bot.send_message(chat_id=chat_id, text="Not enough users with linked Steam accounts in this chat to check for common games.")
+            return
+
+        time_filter = datetime.now() - timedelta(days=days)
+        all_matches = []
+
+        for steam_id_32 in user_steam_ids_32:
+            stats = await get_player_dota_stats(steam_id_32, steam_api_key, limit=100)
+            if stats and stats.get("result", {}).get("matches"):
+                player_matches = {m["match_id"] for m in stats["result"]["matches"] if datetime.fromtimestamp(m["start_time"]) >= time_filter}
+                all_matches.append(player_matches)
+                logger.info(f"Found {len(player_matches)} matches for steam_id {steam_id_32} in the last {days} days.")
+
+        if not all_matches:
+            await context.bot.send_message(chat_id=chat_id, text=f"No matches found for any of the {len(user_steam_ids_32)} linked users in the last {days} days.")
+            return
+
+        common_matches = set.intersection(*all_matches)
+        logger.info(f"Found {len(common_matches)} common matches.")
+
+        if not common_matches:
+            await context.bot.send_message(chat_id=chat_id, text=f"No common games found between the {len(user_steam_ids_32)} linked users in the last {days} days.")
+            return
+
+        stored_matches = 0
+        for match_id in common_matches:
+            # Check if match is already stored
+            if await db.get_match(match_id):
+                continue
+
+            match_details = await get_match_details(match_id, steam_api_key)
+            if match_details:
+                winner = "radiant" if match_details["result"]["radiant_win"] else "dire"
+                radiant_players = [p["account_id"] for p in match_details["result"]["players"] if p["player_slot"] < 128]
+                dire_players = [p["account_id"] for p in match_details["result"]["players"] if p["player_slot"] >= 128]
+                await db.store_match(match_id, chat_id, winner, ",".join(map(str, radiant_players)), ",".join(map(str, dire_players)))
+                stored_matches += 1
+        
+        await context.bot.send_message(chat_id=chat_id, text=f"Found and stored {stored_matches} new common games from the last {days} days.")
+
+    except (SteamApiError, DatabaseError) as e:
+        logger.error(f"Error checking for games on demand: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=f"An error occurred while checking for games: {e}")

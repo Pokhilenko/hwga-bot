@@ -838,6 +838,7 @@ async def setup_commands(application):
         BotCommand("who_is_playing", "Показать кто играет в Dota 2"),
         BotCommand("stats", "Статистика опросов"),
         BotCommand("games_stat", "Статистика игр"),
+        BotCommand("check_games", "Проверить наличие игр (указать кол-во дней)"),
         BotCommand("set_poll_time", "Установить время опроса (ЧЧ:ММ)"),
         BotCommand("get_poll_time", "Показать установленное время опроса"),
         BotCommand("pause_polls", "Пропустить следующие n опросов"),
@@ -984,3 +985,24 @@ async def refresh_games_stat_command(update, context):
     
     stats_message, reply_markup = await _build_games_stat_message(chat_id, days, user_id if is_private_chat else None)
     await query.edit_message_text(stats_message, reply_markup=reply_markup)
+
+
+@update_chat_name_decorator
+async def check_games_command(update, context):
+    """Check for games on demand."""
+    chat_id = str(update.effective_chat.id)
+    
+    try:
+        days = int(context.args[0]) if context.args else 7
+    except (IndexError, ValueError):
+        await update.message.reply_text("Please provide a valid number of days. Usage: /check_games <days>")
+        return
+
+    await update.message.reply_text(f"Checking for common games in the last {days} days. This might take a while...")
+
+    steam_api_key = os.environ.get("STEAM_API_KEY")
+    if not steam_api_key:
+        await update.message.reply_text(config.MSG_STEAM_API_KEY_MISSING)
+        return
+
+    await steam.check_games_on_demand(context, chat_id, days, steam_api_key)

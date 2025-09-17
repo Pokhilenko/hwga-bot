@@ -609,3 +609,10 @@ async def get_chat_steam_ids_32(chat_id):
             all_steam_ids_64 = list(set(steam_ids_64 + legacy_steam_ids_64))
 
             return [convert_steamid_64_to_32(steam_id) for steam_id in all_steam_ids_64]
+
+
+async def get_match(match_id):
+    """Get a match by its ID."""
+    async with db_semaphore:
+        with get_db_session() as session:
+            return session.query(Match).filter(Match.match_id == str(match_id)).first()
