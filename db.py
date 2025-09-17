@@ -8,9 +8,10 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine, Column, Integer, String, TIMESTAMP, ForeignKey, Boolean, func, or_
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import sessionmaker
 
 from exceptions import DatabaseError
+from utils import convert_steamid_64_to_32
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -551,10 +552,12 @@ async def get_games_stats(chat_id, days, user_id=None):
             if user_id:
                 user = session.query(User).filter(User.telegram_id == str(user_id)).first()
                 if user and user.steam_id:
+                    steam_id_32 = convert_steamid_64_to_32(user.steam_id)
                     return session.query(Match).filter(
+                        Match.chat_id == str(chat_id),
                         or_(
-                            Match.radiant_players.contains(user.steam_id),
-                            Match.dire_players.contains(user.steam_id)
+                            Match.radiant_players.contains(steam_id_32),
+                            Match.dire_players.contains(steam_id_32)
                         ),
                         Match.created_at >= time_filter
                     ).all()
@@ -577,15 +580,32 @@ async def store_game_participants(chat_id, user_ids):
 
 
 async def get_game_participants():
-    """Get game participants from the database."""
+    """Get game participants from the database from the last 2 hours."""
     async with db_semaphore:
         with get_db_session() as session:
-            return session.query(GameParticipant).all()
+            time_filter = datetime.now() - timedelta(hours=2)
+            return session.query(GameParticipant).filter(GameParticipant.poll_end_time >= time_filter).all()
 
 
-async def delete_game_participants(chat_id):
+async def delete_game_participants(participant_ids):
     """Delete game participants from the database."""
     async with db_semaphore:
         with get_db_session() as session:
-            session.query(GameParticipant).filter(GameParticipant.chat_id == chat_id).delete()
+            session.query(GameParticipant).filter(GameParticipant.id.in_(participant_ids)).delete(synchronize_session=False)
 
+
+async def get_chat_steam_ids_32(chat_id):
+    """Get a list of 32-bit Steam IDs for all users in a chat."""
+    async with db_semaphore:
+        with get_db_session() as session:
+            # Query UserSteamChat for all steam_ids linked to the chat_id
+            user_steam_chats = session.query(UserSteamChat.steam_id).filter(UserSteamChat.chat_id == str(chat_id)).all()
+            steam_ids_64 = [row[0] for row in user_steam_chats if row[0]]
+
+            # Query legacy users as well
+            legacy_users = session.query(User.steam_id).join(Vote, User.telegram_id == Vote.user_id).join(Poll, Vote.poll_id == Poll.id).filter(Poll.chat_id == str(chat_id)).filter(User.steam_id.isnot(None)).distinct().all()
+            legacy_steam_ids_64 = [row[0] for row in legacy_users if row[0]]
+
+            all_steam_ids_64 = list(set(steam_ids_64 + legacy_steam_ids_64))
+
+            return [convert_steamid_64_to_32(steam_id) for steam_id in all_steam_ids_64]

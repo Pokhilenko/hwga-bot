@@ -911,9 +911,19 @@ async def games_stat_command(update, context):
 
         total_matches = len(stats)
         wins = 0
+
+        chat_steam_ids_32 = await db.get_chat_steam_ids_32(chat_id)
+
         for match in stats:
-            # Assuming the bot is playing on the radiant side
-            if match.winner == 'radiant':
+            radiant_players = match.radiant_players.split(',') if match.radiant_players else []
+            dire_players = match.dire_players.split(',') if match.dire_players else []
+
+            is_radiant = any(p in radiant_players for p in chat_steam_ids_32)
+            is_dire = any(p in dire_players for p in chat_steam_ids_32)
+
+            if is_radiant and match.winner == 'radiant':
+                wins += 1
+            elif is_dire and match.winner == 'dire':
                 wins += 1
         
         win_percentage = (wins / total_matches) * 100 if total_matches > 0 else 0

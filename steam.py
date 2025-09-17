@@ -11,6 +11,8 @@ import summary
 import config
 
 # Configure logging
+from utils import convert_steamid_64_to_32
+
 logger = logging.getLogger(__name__)
 
 
@@ -428,12 +430,12 @@ async def get_match_details(match_id, steam_api_key):
         raise SteamApiError(f"Error in Steam API request when getting match details: {e}")
 
 
-async def get_player_dota_stats(steam_id, steam_api_key):
+async def get_player_dota_stats(steam_id, steam_api_key, limit=1):
     """Get player's Dota 2 stats, including current match ID."""
     if not steam_api_key:
         raise SteamApiError("Steam API key not set, cannot get player Dota 2 stats")
 
-    url = f"https://api.steampowered.com/IDOTA2Match_570/GetMatchHistory/V001/?key={steam_api_key}&account_id={steam_id}"
+    url = f"https://api.steampowered.com/IDOTA2Match_570/GetMatchHistory/V001/?key={steam_api_key}&account_id={steam_id}&matches_requested={limit}"
     logger.info(f"Sending Steam API request for player Dota 2 stats for Steam ID {steam_id}")
 
     try:
@@ -457,49 +459,67 @@ async def check_and_store_dota_games(context, steam_api_key):
     logger.info("Checking for Dota 2 games...")
     participants = await db.get_game_participants()
     if not participants:
+        logger.info("No game participants found.")
         return
+
+    logger.info(f"Found {len(participants)} game participants.")
 
     # Group participants by chat
     chat_participants = {}
     for p in participants:
         if p.chat_id not in chat_participants:
             chat_participants[p.chat_id] = []
-        chat_participants[p.chat_id].append(p.user_id)
+        chat_participants[p.chat_id].append(p)
 
-    for chat_id, user_ids in chat_participants.items():
-        if len(user_ids) < 2:
+    for chat_id, participant_group in chat_participants.items():
+        logger.info(f"Checking chat {chat_id} with {len(participant_group)} participants.")
+        if len(participant_group) < 2:
             continue
 
+        user_ids = [p.user_id for p in participant_group]
         steam_ids = []
         for user_id in user_ids:
             user_info = await db.get_user_info(user_id)
             if user_info and user_info["steam_id"]:
                 steam_ids.append(user_info["steam_id"])
 
+        logger.info(f"Found {len(steam_ids)} steam_ids for chat {chat_id}: {steam_ids}")
         if len(steam_ids) < 2:
             continue
 
         try:
-            match_ids = set()
+            all_matches = []
             for steam_id in steam_ids:
-                stats = await get_player_dota_stats(steam_id, steam_api_key)
+                stats = await get_player_dota_stats(convert_steamid_64_to_32(steam_id), steam_api_key, limit=5)
                 if stats and stats.get("result", {}).get("matches"):
-                    match_ids.add(stats["result"]["matches"][0]["match_id"])
+                    player_matches = {m["match_id"] for m in stats["result"]["matches"]}
+                    all_matches.append(player_matches)
+                    logger.info(f"Found {len(player_matches)} matches for steam_id {steam_id}: {player_matches}")
 
-            if len(match_ids) == 1:
-                match_id = match_ids.pop()
+            if not all_matches:
+                logger.info("No matches found for any participant.")
+                continue
+
+            common_matches = set.intersection(*all_matches)
+            logger.info(f"Found {len(common_matches)} common matches: {common_matches}")
+
+            for match_id in common_matches:
                 match_details = await get_match_details(match_id, steam_api_key)
                 if match_details:
                     winner = "radiant" if match_details["result"]["radiant_win"] else "dire"
                     radiant_players = [p["account_id"] for p in match_details["result"]["players"] if p["player_slot"] < 128]
                     dire_players = [p["account_id"] for p in match_details["result"]["players"] if p["player_slot"] >= 128]
                     await db.store_match(match_id, chat_id, winner, ",".join(map(str, radiant_players)), ",".join(map(str, dire_players)))
+                    logger.info(f"Stored match {match_id} for chat {chat_id}.")
                     
                     summary_text = await summary.generate_summary(match_details)
                     await context.bot.send_message(chat_id=chat_id, text=summary_text)
 
                     # Clean up participants
-                    await db.delete_game_participants(chat_id)
+                    participant_ids_to_delete = [p.id for p in participant_group]
+                    await db.delete_game_participants(participant_ids_to_delete)
+                    logger.info(f"Deleted {len(participant_ids_to_delete)} game participants for chat {chat_id}.")
+                    break # Exit after finding one common match
 
         except SteamApiError as e:
             logger.error(f"Error checking for Dota 2 games: {e}")
