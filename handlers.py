@@ -887,22 +887,10 @@ async def who_is_playing_command(update, context):
         )
 
 
-@update_chat_name_decorator
-async def games_stat_command(update, context):
-    """Display games statistics."""
-    chat_id = str(update.effective_chat.id)
-    user_id = update.effective_user.id
-    is_private_chat = update.effective_chat.type == 'private'
-    logger.info(f"games_stat_command called in {'private' if is_private_chat else 'group'} chat {chat_id} by user {user_id}")
-
+async def _build_games_stat_message(chat_id, days, user_id=None):
+    """Builds the games statistics message."""
     try:
-        days = int(context.args[0]) if context.args else 7
-    except (IndexError, ValueError):
-        await update.message.reply_text("Please provide a valid number of days. Usage: /games_stat <days>")
-        return
-
-    try:
-        if is_private_chat:
+        if user_id:
             stats = await db.get_games_stats(chat_id, days, user_id=user_id)
         else:
             stats = await db.get_games_stats(chat_id, days)
@@ -910,13 +898,16 @@ async def games_stat_command(update, context):
         logger.info(f"Found {len(stats)} matches for chat {chat_id} in the last {days} days.")
 
         if not stats:
-            await update.message.reply_text(f"No game stats found for the last {days} days.")
-            return
+            stats_message = f"No game stats found for the last {days} days."
+            keyboard = [[InlineKeyboardButton("Refresh", callback_data=f"refresh_games_stat:{days}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            return stats_message, reply_markup
 
         total_matches = len(stats)
         wins = 0
 
         chat_steam_ids_32 = await db.get_chat_steam_ids_32(chat_id)
+        logger.info(f"Chat Steam IDs 32: {chat_steam_ids_32}")
 
         for match in stats:
             radiant_players = match.radiant_players.split(',') if match.radiant_players else []
@@ -940,10 +931,56 @@ async def games_stat_command(update, context):
         Win percentage: {win_percentage:.2f}%
         """
         
-        await update.message.reply_text(stats_message)
+        keyboard = [[InlineKeyboardButton("Refresh", callback_data=f"refresh_games_stat:{days}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        return stats_message, reply_markup
     except DatabaseError as e:
-        logger.error(f"Database error in games_stat_command: {e}")
-        await update.message.reply_text("A database error occurred. Please try again later.")
+        logger.error(f"Database error in _build_games_stat_message: {e}")
+        return "A database error occurred. Please try again later.", None
     except Exception as e:
-        logger.error(f"An unexpected error occurred in games_stat_command: {e}")
-        await update.message.reply_text("An unexpected error occurred. Please try again later.")
+        logger.error(f"An unexpected error occurred in _build_games_stat_message: {e}")
+        return "An unexpected error occurred. Please try again later.", None
+
+
+@update_chat_name_decorator
+async def games_stat_command(update, context):
+    """Display games statistics."""
+    chat_id = str(update.effective_chat.id)
+    user_id = update.effective_user.id
+    is_private_chat = update.effective_chat.type == 'private'
+    logger.info(f"games_stat_command called in {'private' if is_private_chat else 'group'} chat {chat_id} by user {user_id}")
+
+    try:
+        days = int(context.args[0]) if context.args else 7
+    except (IndexError, ValueError):
+        await update.message.reply_text("Please provide a valid number of days. Usage: /games_stat <days>")
+        return
+
+    stats_message, reply_markup = await _build_games_stat_message(chat_id, days, user_id if is_private_chat else None)
+    await update.message.reply_text(stats_message, reply_markup=reply_markup)
+
+
+@update_chat_name_decorator
+async def refresh_games_stat_command(update, context):
+    """Refresh games statistics."""
+    query = update.callback_query
+    await query.answer()
+    
+    chat_id = str(query.message.chat.id)
+    user_id = query.from_user.id
+    is_private_chat = query.message.chat.type == 'private'
+    
+    try:
+        days = int(query.data.split(':')[1])
+    except (IndexError, ValueError):
+        days = 7
+
+    await query.edit_message_text("Refreshing game stats...")
+
+    steam_api_key = os.environ.get("STEAM_API_KEY")
+    if steam_api_key:
+        await steam.check_and_store_dota_games(context, steam_api_key)
+    
+    stats_message, reply_markup = await _build_games_stat_message(chat_id, days, user_id if is_private_chat else None)
+    await query.edit_message_text(stats_message, reply_markup=reply_markup)

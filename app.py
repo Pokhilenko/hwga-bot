@@ -73,6 +73,11 @@ def main():
             handlers.handle_unlink_steam_cancel, pattern="^unlink_cancel:"
         )
     )
+    application.add_handler(
+        CallbackQueryHandler(
+            handlers.refresh_games_stat_command, pattern="^refresh_games_stat:"
+        )
+    )
 
     # Register poll answer handler
     application.add_handler(PollAnswerHandler(handlers.handle_poll_answer))
