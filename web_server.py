@@ -1475,6 +1475,9 @@ async def steam_success_handler(request):
         description = f'Вы успешно привязали свой аккаунт Steam к чату "{chat_name}". Теперь бот сможет отслеживать, когда вы играете в Dota 2, и автоматически предлагать опрос для вашей группы.'
         icon_color = "#4CAF50"  # Зеленый цвет для успешной привязки
 
+    if chat_id and chat_id.lstrip('-').isdigit() and int(chat_id) > 0:
+        description += '\n\n<p class="warning">ВАЖНО: Вы привязали аккаунт в личном чате. Для отслеживания игр в групповом чате, используйте команду /link_steam непосредственно в этом чате.</p>'
+
     html = f"""
     <!DOCTYPE html>
     <html lang="ru">

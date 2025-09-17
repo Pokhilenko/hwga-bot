@@ -360,12 +360,16 @@ async def link_steam_command(update, context):
         keyboard = [[InlineKeyboardButton("Войти через Steam", url=auth_url)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
+        message = config.MSG_STEAM_LINK_PROMPT
+        if chat.type == 'private':
+            message += "\n\n" + config.MSG_STEAM_LINK_PRIVATE_CHAT_WARNING
+
         # Send a message with instructions to either the private chat or the group chat
         await send_message(
             context,
             chat_id,
             user.id,
-            config.MSG_STEAM_LINK_PROMPT,
+            message,
             reply_markup=reply_markup,
         )
 
