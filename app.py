@@ -10,7 +10,6 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-import db
 import handlers
 from scheduler import setup_jobs
 import web_server
@@ -28,7 +27,13 @@ def main():
     # Load environment variables from .env file
     load_dotenv()
     TOKEN = os.getenv("BOT_TOKEN")
+    if not TOKEN:
+        logger.critical("BOT_TOKEN environment variable not set. The bot cannot start.")
+        return
+
     STEAM_API_KEY = os.getenv("STEAM_API_KEY")
+    if not STEAM_API_KEY:
+        logger.warning("STEAM_API_KEY environment variable not set. Steam-related features will not work.")
 
     # Create the Telegram Application
     application = ApplicationBuilder().token(TOKEN).build()
