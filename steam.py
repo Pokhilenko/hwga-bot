@@ -22,6 +22,7 @@ async def _send_opendota_request(endpoint):
             async with session.get(url) as response:
                 if response.status != 200:
                     raise DotaApiError(f"OpenDota API returned status {response.status}")
+                logger.info(f"OpenDota API request to {url} response is {response.json()}")
                 return await response.json()
     except aiohttp.ClientError as e:
         raise DotaApiError(f"Error in OpenDota API request: {e}")
