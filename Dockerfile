@@ -1,30 +1,16 @@
-# Stage 1: Build stage
-FROM python:3.11.5-slim as builder
+FROM python:3.11-slim-buster
 
 WORKDIR /app
 
-# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Stage 2: Production stage
-FROM python:3.11.5-slim
-
-WORKDIR /app
-
-# Create a non-root user
-RUN addgroup --system app && adduser --system --group app
-
-# Copy installed dependencies from builder stage
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-
-# Copy application code
 COPY . .
 
-# Set ownership
-RUN chown -R app:app /app
+# Set environment variables for Alembic to pick up
+ENV DOTA_DB_DSN="postgresql+psycopg2://user:pass@dota_db:5432/dota_stats"
 
-# Switch to non-root user
-USER app
+# Run Alembic migrations
+RUN alembic -c dota_analytics/db/migrations/alembic.ini upgrade head
 
-CMD ["python", "app.py"]
+CMD ["uvicorn", "dota_analytics.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

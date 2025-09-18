@@ -1,8 +1,11 @@
-python-telegram-bot
-apscheduler
-python-dotenv
-pytz
-aiohttp
+fastapi
+uvicorn
 sqlalchemy
 alembic
+psycopg2-binary
+python-dotenv
+APScheduler
+httpx
+tenacity
+pydantic
 google-generativeai

@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  dota_db:
+    image: postgres:14-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: dota_stats
+    ports:
+      - "5433:5432" # Map to a different port to avoid conflict with existing postgres
+    volumes:
+      - dota_db_data:/var/lib/postgresql/data
+
+  telegram_db:
+    image: postgres:14-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: telegram_db
+    ports:
+      - "5434:5432" # Map to a different port
+    volumes:
+      - telegram_db_data:/var/lib/postgresql/data
+
+  dota_analytics_api:
+    build: .
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      DOTA_DB_DSN: postgresql+psycopg2://user:pass@dota_db:5432/dota_stats
+      TG_DB_DSN: postgresql+psycopg2://user:pass@telegram_db:5432/telegram_db
+      OPENDOTA_API_KEY: ${OPENDOTA_API_KEY}
+      OPENDOTA_BASE: https://api.opendota.com/api
+      SYNC_DEFAULT_DAYS: 60
+      SYNC_CRON: "0 4 * * *"
+    depends_on:
+      - dota_db
+      - telegram_db
+
+volumes:
+  dota_db_data:
+  telegram_db_data:

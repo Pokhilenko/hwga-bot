@@ -156,11 +156,47 @@ async def check_games_on_demand(context, chat_id, days):
     """Check for games on demand for all linked users in a chat."""
     logger.info(f"Checking for games on demand in chat {chat_id} for the last {days} days.")
     user_steam_ids_32 = await db.get_chat_steam_ids_32(chat_id)
-    if len(user_steam_ids_32) < 2:
-        await context.bot.send_message(chat_id=chat_id, text="Not enough users with linked Steam accounts in this chat to check for common games.")
+    
+    if not user_steam_ids_32:
+        await context.bot.send_message(chat_id=chat_id, text="No users with linked Steam accounts in this chat.")
         return
 
-    await _find_and_store_common_games(context, chat_id, user_steam_ids_32, days)
+    if len(user_steam_ids_32) == 1:
+        await _find_and_store_single_player_games(context, chat_id, user_steam_ids_32[0], days)
+    else:
+        await _find_and_store_common_games(context, chat_id, user_steam_ids_32, days)
+
+
+async def _find_and_store_single_player_games(context, chat_id, steam_id_32, days):
+    """Find and store games for a single player."""
+    try:
+        time_filter = datetime.now() - timedelta(days=days)
+        matches = await get_player_dota_stats(steam_id_32, limit=100)
+        if not matches:
+            await context.bot.send_message(chat_id=chat_id, text=f"No matches found for the linked user in the last {days} days.")
+            return
+
+        stored_matches_count = 0
+        for match in matches:
+            if datetime.fromtimestamp(match["start_time"]) < time_filter:
+                continue
+            
+            if await db.get_match(match["match_id"]):
+                continue
+
+            match_details = await get_match_details(match["match_id"])
+            if match_details:
+                winner = "radiant" if match_details.get("radiant_win") else "dire"
+                radiant_players = [p["account_id"] for p in match_details["players"] if p.get("isRadiant")]
+                dire_players = [p["account_id"] for p in match_details["players"] if not p.get("isRadiant")]
+                await db.store_match(match["match_id"], chat_id, winner, ",".join(map(str, radiant_players)), ",".join(map(str, dire_players)))
+                stored_matches_count += 1
+        
+        await context.bot.send_message(chat_id=chat_id, text=f"Found and stored {stored_matches_count} new games for the single linked user from the last {days} days.")
+
+    except (DotaApiError, DatabaseError) as e:
+        logger.error(f"Error finding and storing single player games: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=f"An error occurred while checking for games: {e}")
 
 
 async def _find_and_store_common_games(context, chat_id, steam_ids_32, days):
