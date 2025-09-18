@@ -17,13 +17,15 @@ async def _send_opendota_request(endpoint):
     url = f"https://api.opendota.com/api/{endpoint}"
     logger.info(f"Sending OpenDota API request to {url}")
 
+    matches = None
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 if response.status != 200:
                     raise DotaApiError(f"OpenDota API returned status {response.status}")
-                logger.info(f"OpenDota API request to {url} response is {response.json()}")
-                return await response.json()
+                matches = await response.json()
+                logger.info(f"OpenDota API request to {url} response is {matches}")
+                return matches
     except aiohttp.ClientError as e:
         raise DotaApiError(f"Error in OpenDota API request: {e}")
 
