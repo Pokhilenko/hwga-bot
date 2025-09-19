@@ -584,7 +584,11 @@ async def get_game_participants():
     async with db_semaphore:
         with get_db_session() as session:
             time_filter = datetime.now() - timedelta(hours=2)
-            return session.query(GameParticipant).filter(GameParticipant.poll_end_time >= time_filter).all()
+            participants = session.query(GameParticipant).filter(GameParticipant.poll_end_time >= time_filter).all()
+            # Force loading of chat_id before session closes
+            for p in participants:
+                _ = p.chat_id # Accessing the attribute forces it to load
+            return participants
 
 
 async def delete_game_participants(participant_ids):
