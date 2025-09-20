@@ -9,8 +9,18 @@ from exceptions import DatabaseError, DotaApiError
 import summary
 from utils import convert_steamid_64_to_32
 
+# Import new analytics services
+from dota_analytics.clients.opendota import OpenDotaClient
+from dota_analytics.services.sync import SyncService, TelegramDBAdapter
+
 logger = logging.getLogger(__name__)
 
+# Initialize OpenDotaClient and SyncService globally or pass them around
+# For simplicity in this example, we'll initialize them here. In a larger app,
+# you might use dependency injection.
+opendota_client = OpenDotaClient()
+sync_service = SyncService(opendota_client)
+telegram_db_adapter = TelegramDBAdapter() # Placeholder, needs actual implementation
 
 async def _send_opendota_request(endpoint):
     """Helper function to send a request to the OpenDota API."""
@@ -53,6 +63,8 @@ async def verify_steam_id(steam_id_64):
 async def get_player_dota_stats(steam_id_32, limit=100):
     """Get player's Dota 2 stats from OpenDota API."""
     try:
+        # This function is now deprecated in favor of using SyncService directly
+        # However, keeping it for backward compatibility if other parts of the bot still use it.
         data = await _send_opendota_request(f"players/{steam_id_32}/matches?limit={limit}")
         return data
     except DotaApiError as e:
@@ -149,7 +161,9 @@ async def check_and_store_dota_games(context):
         if len(steam_ids_32) < 2:
             continue
 
-        await _find_and_store_common_games(context, chat_id, steam_ids_32, 1)
+        # Use the new sync service for storing matches
+        await sync_service.incremental_sync(steam_ids_32) # Assuming incremental sync is appropriate here
+
         participant_ids_to_delete = [p.id for p in participant_group]
         await db.delete_game_participants(participant_ids_to_delete)
         logger.info(f"Deleted {len(participant_ids_to_delete)} game participants for chat {chat_id}.")
@@ -158,100 +172,25 @@ async def check_and_store_dota_games(context):
 async def check_games_on_demand(context, chat_id, days):
     """Check for games on demand for all linked users in a chat."""
     logger.info(f"Checking for games on demand in chat {chat_id} for the last {days} days.")
+
+    # First, ETL Telegram shadow tables to ensure up-to-date user data
+    await sync_service.etl_telegram_shadow_tables(telegram_db_adapter)
+
     user_steam_ids_32 = await db.get_chat_steam_ids_32(chat_id)
     
     if not user_steam_ids_32:
         await context.bot.send_message(chat_id=chat_id, text="No users with linked Steam accounts in this chat.")
         return
 
-    if len(user_steam_ids_32) == 1:
-        await _find_and_store_single_player_games(context, chat_id, user_steam_ids_32[0], days)
-    else:
-        await _find_and_store_common_games(context, chat_id, user_steam_ids_32, days)
+    # Use the new sync service for initial import (or incremental if preferred)
+    await sync_service.initial_player_import(user_steam_ids_32) # This will fetch matches for 'days' back
+
+    await context.bot.send_message(chat_id=chat_id, text=f"Initiated game data sync for {len(user_steam_ids_32)} users in the last {days} days. Statistics will be available shortly.")
 
 
-async def _find_and_store_single_player_games(context, chat_id, steam_id_32, days):
-    """Find and store games for a single player."""
-    try:
-        time_filter = datetime.now() - timedelta(days=days)
-        matches = await get_player_dota_stats(steam_id_32, limit=100)
-        if not matches:
-            await context.bot.send_message(chat_id=chat_id, text=f"No matches found for the linked user in the last {days} days.")
-            return
+# The following functions are no longer needed as match storage is handled by SyncService
+# async def _find_and_store_single_player_games(context, chat_id, steam_id_32, days):
+#     pass
 
-        stored_matches_count = 0
-        for match in matches:
-            if datetime.fromtimestamp(match["start_time"]) < time_filter:
-                continue
-            
-            if await db.get_match(match["match_id"]):
-                continue
-
-            match_details = await get_match_details(match["match_id"])
-            if match_details:
-                winner = "radiant" if match_details.get("radiant_win") else "dire"
-                radiant_players = [p["account_id"] for p in match_details["players"] if p.get("isRadiant")]
-                dire_players = [p["account_id"] for p in match_details["players"] if not p.get("isRadiant")]
-                await db.store_match(match["match_id"], chat_id, winner, ",".join(map(str, radiant_players)), ",".join(map(str, dire_players)))
-                stored_matches_count += 1
-        
-        await context.bot.send_message(chat_id=chat_id, text=f"Found and stored {stored_matches_count} new games for the single linked user from the last {days} days.")
-
-    except (DotaApiError, DatabaseError) as e:
-        logger.error(f"Error finding and storing single player games: {e}")
-        await context.bot.send_message(chat_id=chat_id, text=f"An error occurred while checking for games: {e}")
-
-
-async def _find_and_store_common_games(context, chat_id, steam_ids_32, days):
-    """Find and store common games for a list of players."""
-    try:
-        time_filter = datetime.now() - timedelta(days=days)
-        player_matches = {}
-
-        for steam_id_32 in steam_ids_32:
-            matches = await get_player_dota_stats(steam_id_32, limit=100)
-            if matches:
-                player_matches[steam_id_32] = {m["match_id"] for m in matches if datetime.fromtimestamp(m["start_time"]) >= time_filter}
-
-        if not player_matches:
-            await context.bot.send_message(chat_id=chat_id, text=f"No matches found for any of the {len(steam_ids_32)} linked users in the last {days} days.")
-            return
-
-        match_players = {}
-        for player, matches in player_matches.items():
-            for match_id in matches:
-                if match_id not in match_players:
-                    match_players[match_id] = []
-                match_players[match_id].append(player)
-
-        common_matches = {match_id: players for match_id, players in match_players.items() if len(players) >= 2}
-
-        if not common_matches:
-            await context.bot.send_message(chat_id=chat_id, text=f"No common games found between the linked users in the last {days} days.")
-            return
-
-        stored_matches_count = 0
-        for match_id, players in common_matches.items():
-            if await db.get_match(match_id):
-                continue
-
-            match_details = await get_match_details(match_id)
-            if match_details:
-                winner = "radiant" if match_details.get("radiant_win") else "dire"
-                radiant_players = [p["account_id"] for p in match_details["players"] if p.get("isRadiant")]
-                dire_players = [p["account_id"] for p in match_details["players"] if not p.get("isRadiant")]
-                await db.store_match(match_id, chat_id, winner, ",".join(map(str, radiant_players)), ",".join(map(str, dire_players)))
-                stored_matches_count += 1
-
-                player_names = []
-                for steam_id_32 in players:
-                    user_info = await db.get_user_info_by_steam_id_32(steam_id_32)
-                    player_names.append(user_info["first_name"] if user_info else f"Unknown({steam_id_32})")
-                
-                await context.bot.send_message(chat_id=chat_id, text=f"Found a game played by {', '.join(player_names)}.")
-
-        await context.bot.send_message(chat_id=chat_id, text=f"Found and stored {stored_matches_count} new common games from the last {days} days.")
-
-    except (DotaApiError, DatabaseError) as e:
-        logger.error(f"Error finding and storing common games: {e}")
-        await context.bot.send_message(chat_id=chat_id, text=f"An error occurred while checking for games: {e}")
+# async def _find_and_store_common_games(context, chat_id, steam_ids_32, days):
+#     pass
