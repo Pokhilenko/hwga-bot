@@ -20,7 +20,7 @@ async def setup_jobs(job_queue, send_poll_func):
         # No custom schedules - run default poll at 21:30 (GMT+6)
         target_time = time(hour=15, minute=30)  # 21:30 GMT+6 = 15:30 UTC
         job_queue.run_daily(
-            lambda ctx: daily_poll(ctx, send_poll_func),
+            _make_daily_poll_callback(send_poll_func),
             time=target_time,
             days=(0, 1, 2, 3, 4, 5, 6),
             name="daily_poll",
@@ -30,14 +30,32 @@ async def setup_jobs(job_queue, send_poll_func):
         await setup_custom_poll_times(job_queue, send_poll_func, chat_times)
 
     # Set up Dota 2 game checker
-    dota_game_check_job = job_queue.run_repeating(
-        lambda ctx: steam.check_and_store_dota_games(ctx),
+    job_queue.run_repeating(
+        _dota_game_check_callback,
         interval=15 * 60,  # Check every 15 minutes
         first=0,  # Start immediately
         name="dota_game_check",
     )
 
     logger.info("Scheduled jobs set up successfully")
+
+
+def _make_daily_poll_callback(send_poll_func):
+    async def _callback(context):
+        await daily_poll(context, send_poll_func)
+
+    return _callback
+
+
+def _make_custom_poll_callback(send_poll_func, chat_id):
+    async def _callback(context):
+        await custom_poll(context, send_poll_func, chat_id)
+
+    return _callback
+
+
+async def _dota_game_check_callback(context):
+    await steam.check_and_store_dota_games(context)
 
 
 async def setup_custom_poll_times(job_queue, send_poll_func, chat_times):
@@ -52,7 +70,7 @@ async def setup_custom_poll_times(job_queue, send_poll_func, chat_times):
 
             # Schedule the job
             job_queue.run_daily(
-                lambda ctx, chat=chat_id: custom_poll(ctx, send_poll_func, chat),
+                _make_custom_poll_callback(send_poll_func, chat_id),
                 time=target_time,
                 days=(0, 1, 2, 3, 4, 5, 6),  # Run every day
                 name=f"custom_poll_{chat_id}_{poll_time_str}",
@@ -160,7 +178,7 @@ async def reschedule_poll_for_chat(job_queue, chat_id, send_poll_func):
 
         # Schedule the job
         job_queue.run_daily(
-            lambda ctx, chat=chat_id: custom_poll(ctx, send_poll_func, chat),
+            _make_custom_poll_callback(send_poll_func, chat_id),
             time=target_time,
             days=(0, 1, 2, 3, 4, 5, 6),  # Run every day
             name=f"custom_poll_{chat_id}_{poll_time_str}",

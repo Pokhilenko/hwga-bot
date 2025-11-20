@@ -1,12 +1,11 @@
 import asyncio
 import logging
+from collections import defaultdict
 from datetime import datetime, timedelta
-
-import aiohttp
+from typing import Dict, Iterable, List, Optional, Sequence, Set
 
 import db
 from exceptions import DatabaseError, DotaApiError
-import summary
 from utils import convert_steamid_64_to_32
 
 # Import new analytics services
@@ -20,31 +19,47 @@ logger = logging.getLogger(__name__)
 # you might use dependency injection.
 opendota_client = OpenDotaClient()
 sync_service = SyncService(opendota_client)
-telegram_db_adapter = TelegramDBAdapter() # Placeholder, needs actual implementation
+telegram_db_adapter = TelegramDBAdapter()
 
-async def _send_opendota_request(endpoint):
-    """Helper function to send a request to the OpenDota API."""
-    url = f"https://api.opendota.com/api/{endpoint}"
-    logger.info(f"Sending OpenDota API request to {url}")
 
-    matches = None
+def _normalize_steam32_ids(raw_ids: Iterable[str]) -> List[int]:
+    normalized = []
+    for steam_id in raw_ids:
+        try:
+            normalized.append(int(steam_id))
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
+
+async def _get_player_profile(steam32_id: int):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    raise DotaApiError(f"OpenDota API returned status {response.status}")
-                matches = await response.json()
-                logger.info(f"OpenDota API request to {url} response is {matches}")
-                return matches
-    except aiohttp.ClientError as e:
-        raise DotaApiError(f"Error in OpenDota API request: {e}")
+        return await opendota_client.get_player(account_id=steam32_id)
+    except Exception as exc:  # pragma: no cover - networking
+        raise DotaApiError(f"OpenDota player request failed: {exc}") from exc
+
+
+async def _get_recent_matches(steam32_id: int, days: Optional[int] = None):
+    try:
+        return await opendota_client.get_player_recent_matches(
+            account_id=steam32_id, date=days
+        )
+    except Exception as exc:  # pragma: no cover - networking
+        raise DotaApiError(f"OpenDota recent matches failed: {exc}") from exc
+
+
+async def _get_match_details_from_api(match_id: int):
+    try:
+        return await opendota_client.get_match(match_id)
+    except Exception as exc:  # pragma: no cover - networking
+        raise DotaApiError(f"OpenDota match request failed: {exc}") from exc
 
 
 async def verify_steam_id(steam_id_64):
     """Verify Steam ID by checking if it exists in OpenDota API."""
-    steam_id_32 = convert_steamid_64_to_32(steam_id_64)
+    steam_id_32 = int(convert_steamid_64_to_32(steam_id_64))
     try:
-        data = await _send_opendota_request(f"players/{steam_id_32}")
+        data = await _get_player_profile(steam_id_32)
         if not data or "profile" not in data:
             return None
 
@@ -63,11 +78,11 @@ async def verify_steam_id(steam_id_64):
 async def get_player_dota_stats(steam_id_32, limit=100):
     """Get player's Dota 2 stats from OpenDota API."""
     try:
-        # This function is now deprecated in favor of using SyncService directly
-        # However, keeping it for backward compatibility if other parts of the bot still use it.
-        data = await _send_opendota_request(f"players/{steam_id_32}/matches?limit={limit}")
+        data = await opendota_client.get_player_recent_matches(
+            account_id=int(steam_id_32), limit=limit
+        )
         return data
-    except DotaApiError as e:
+    except Exception as e:  # pragma: no cover
         logger.error(f"Error getting player dota stats for {steam_id_32}: {e}")
         return None
 
@@ -75,9 +90,9 @@ async def get_player_dota_stats(steam_id_32, limit=100):
 async def get_match_details(match_id):
     """Get details of a Dota 2 match from OpenDota API."""
     try:
-        data = await _send_opendota_request(f"matches/{match_id}")
+        data = await _get_match_details_from_api(int(match_id))
         return data
-    except DotaApiError as e:
+    except DotaApiError as e:  # pragma: no cover - logging
         logger.error(f"Error getting match details for {match_id}: {e}")
         return None
 
@@ -92,15 +107,21 @@ async def get_steam_player_statuses(chat_id: str):
         online_players = []
         offline_players = []
 
-        for steam_id_32 in user_steam_ids_32:
+        for steam_id_32 in _normalize_steam32_ids(user_steam_ids_32):
             try:
-                data = await _send_opendota_request(f"players/{steam_id_32}")
+                data = await _get_player_profile(steam_id_32)
                 if data and data.get("profile"):
-                    if data.get("profile").get("last_login") is None:
+                    last_login = data["profile"].get("last_login")
+                    if last_login is None:
                         offline_players.append(data["profile"]["personaname"])
                     else:
-                        last_login_time = datetime.fromisoformat(data["profile"]["last_login"].replace("Z", "+00:00"))
-                        if datetime.now(last_login_time.tzinfo) - last_login_time < timedelta(minutes=30):
+                        last_login_time = datetime.fromisoformat(
+                            last_login.replace("Z", "+00:00")
+                        )
+                        if (
+                            datetime.now(last_login_time.tzinfo) - last_login_time
+                            < timedelta(minutes=30)
+                        ):
                             online_players.append(data["profile"]["personaname"])
                         else:
                             offline_players.append(data["profile"]["personaname"])
@@ -156,13 +177,36 @@ async def check_and_store_dota_games(context):
             continue
 
         user_ids = [p.user_id for p in participant_group]
-        steam_ids_32 = [convert_steamid_64_to_32(user.steam_id) for user in (await asyncio.gather(*[db.get_user_info(uid) for uid in user_ids])) if user and user.get("steam_id")]
+        user_infos = await asyncio.gather(*[db.get_user_info(uid) for uid in user_ids])
+        steam_ids_32_str = [
+            convert_steamid_64_to_32(user["steam_id"])
+            for user in user_infos
+            if user and user.get("steam_id")
+        ]
 
-        if len(steam_ids_32) < 2:
+        normalized_ids = _normalize_steam32_ids(steam_ids_32_str)
+        if len(normalized_ids) < 2:
             continue
 
-        # Use the new sync service for storing matches
-        await sync_service.incremental_sync(steam_ids_32) # Assuming incremental sync is appropriate here
+        earliest_poll_end = min(
+            (p.poll_end_time for p in participant_group if p.poll_end_time), default=None
+        )
+        since_epoch = None
+        if earliest_poll_end:
+            # Look for matches that started within ~2 hours around the poll end time
+            since_epoch = int(
+                (earliest_poll_end - timedelta(hours=2)).timestamp()
+            )
+
+        stored_matches = await _sync_chat_matches(
+            chat_id, normalized_ids, since_epoch=since_epoch
+        )
+        logger.info(
+            f"Stored {stored_matches} common matches for chat {chat_id} after poll."
+        )
+
+        # Keep the analytics database in sync as well
+        await sync_service.incremental_sync(normalized_ids)
 
         participant_ids_to_delete = [p.id for p in participant_group]
         await db.delete_game_participants(participant_ids_to_delete)
@@ -173,24 +217,113 @@ async def check_games_on_demand(context, chat_id, days):
     """Check for games on demand for all linked users in a chat."""
     logger.info(f"Checking for games on demand in chat {chat_id} for the last {days} days.")
 
-    # First, ETL Telegram shadow tables to ensure up-to-date user data
-    await sync_service.etl_telegram_shadow_tables(telegram_db_adapter)
-
-    user_steam_ids_32 = await db.get_chat_steam_ids_32(chat_id)
+    raw_ids = await db.get_chat_steam_ids_32(chat_id)
+    normalized_ids = _normalize_steam32_ids(raw_ids)
     
-    if not user_steam_ids_32:
+    if len(normalized_ids) < 2:
         await context.bot.send_message(chat_id=chat_id, text="No users with linked Steam accounts in this chat.")
         return
 
-    # Use the new sync service for initial import (or incremental if preferred)
-    await sync_service.initial_player_import(user_steam_ids_32) # This will fetch matches for 'days' back
+    stored_matches = await _sync_chat_matches(chat_id, normalized_ids, days=days)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "Game scan complete. "
+            f"Found {stored_matches} new match(es) for the last {days} day(s). "
+            "Use /games_stat to view updated statistics."
+        ),
+    )
 
-    await context.bot.send_message(chat_id=chat_id, text=f"Initiated game data sync for {len(user_steam_ids_32)} users in the last {days} days. Statistics will be available shortly.")
+    # Refresh analytics storage so extended dashboards stay current
+    await sync_service.etl_telegram_shadow_tables(telegram_db_adapter)
+    await sync_service.initial_player_import(normalized_ids, since_days=days)
 
 
-# The following functions are no longer needed as match storage is handled by SyncService
-# async def _find_and_store_single_player_games(context, chat_id, steam_id_32, days):
-#     pass
+async def _sync_chat_matches(
+    chat_id: str,
+    steam32_ids: Sequence[int],
+    *,
+    days: Optional[int] = None,
+    since_epoch: Optional[int] = None,
+) -> int:
+    """Fetch, deduplicate and store matches played by at least two chat members."""
+    match_candidates = await _collect_common_match_ids(
+        steam32_ids, days=days, since_epoch=since_epoch
+    )
 
-# async def _find_and_store_common_games(context, chat_id, steam_ids_32, days):
-#     pass
+    stored = 0
+    for match_id in match_candidates:
+        if await db.get_match(match_id):
+            continue
+        details = await _get_match_details_from_api(match_id)
+        if not details:
+            continue
+        await _store_match_from_details(chat_id, details)
+        stored += 1
+    return stored
+
+
+async def _collect_common_match_ids(
+    steam32_ids: Sequence[int],
+    *,
+    days: Optional[int],
+    since_epoch: Optional[int],
+) -> Set[int]:
+    """Return match ids where multiple chat members played together."""
+    match_participants: Dict[int, Set[int]] = defaultdict(set)
+    player_tasks = {
+        steam_id: asyncio.create_task(_get_recent_matches(steam_id, days))
+        for steam_id in steam32_ids
+    }
+
+    for steam_id, task in player_tasks.items():
+        try:
+            matches = await task
+        except DotaApiError as exc:
+            logger.error(f"Failed to fetch matches for {steam_id}: {exc}")
+            continue
+
+        for match in matches or []:
+            match_id = match.get("match_id")
+            start_time = match.get("start_time")
+            if match_id is None:
+                continue
+            if since_epoch and start_time and start_time < since_epoch:
+                continue
+            match_participants[match_id].add(steam_id)
+
+    return {
+        match_id
+        for match_id, players in match_participants.items()
+        if len(players) >= 2
+    }
+
+
+async def _store_match_from_details(chat_id: str, match_details: dict):
+    """Persist a match to the local SQLite database."""
+    match_id = match_details.get("match_id")
+    if not match_id:
+        return
+
+    players = match_details.get("players", [])
+    radiant_players = []
+    dire_players = []
+
+    for player in players:
+        account_id = player.get("account_id")
+        if account_id is None:
+            continue
+        if player.get("player_slot", 0) < 128:
+            radiant_players.append(str(account_id))
+        else:
+            dire_players.append(str(account_id))
+
+    winner = "radiant" if match_details.get("radiant_win") else "dire"
+
+    await db.store_match(
+        str(match_id),
+        chat_id,
+        winner,
+        ",".join(radiant_players),
+        ",".join(dire_players),
+    )

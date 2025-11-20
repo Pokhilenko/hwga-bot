@@ -56,6 +56,9 @@ class OpenDotaClient:
         params = {"limit": limit, "date": date} if limit or date else None
         return await self._request("GET", f"/players/{account_id}/recentMatches", params=params)
 
+    async def get_player(self, account_id: int):
+        return await self._request("GET", f"/players/{account_id}")
+
     async def get_player_wl(self, account_id: int):
         return await self._request("GET", f"/players/{account_id}/wl")
 

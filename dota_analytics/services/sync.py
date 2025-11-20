@@ -7,6 +7,8 @@ from dota_analytics.clients.opendota import OpenDotaClient
 from dota_analytics.db.dota_models import Hero, Item, Match, MatchPlayer, ExtSteamLink, ExtChatMember
 from dota_analytics.db.db_session import get_db
 from dota_analytics.config import settings
+from db import SessionLocal, UserSteamChat, User
+from utils import convert_steamid_64_to_32
 
 class SyncService:
     def __init__(self, opendota_client: OpenDotaClient):
@@ -96,13 +98,16 @@ class SyncService:
                 db.add(db_match_player)
         return new_matches_count
 
-    async def initial_player_import(self, steam32_ids: list[int]):
+    async def initial_player_import(self, steam32_ids: list[int], since_days: int | None = None):
         print(f"Starting initial import for {len(steam32_ids)} players...")
+        days = since_days if since_days is not None else settings.SYNC_DEFAULT_DAYS
         db: Session
         for db in get_db():
             for steam32_id in steam32_ids:
                 print(f"Importing matches for player {steam32_id}...")
-                new_matches = await self._fetch_and_store_player_matches(db, steam32_id, since_days=settings.SYNC_DEFAULT_DAYS)
+                new_matches = await self._fetch_and_store_player_matches(
+                    db, steam32_id, since_days=days
+                )
                 db.commit()
                 print(f"Player {steam32_id}: Imported {new_matches} new matches.")
         print("Initial player import complete.")
@@ -145,11 +150,61 @@ class SyncService:
 # Placeholder for Telegram DB adapter (to be implemented or provided by user)
 class TelegramDBAdapter:
     async def get_all_steam_links(self):
-        # This should query the existing Telegram DB
-        # Example return format: [{'user_id': 123, 'steam32_id': 12345}]
-        return []
+        def _query():
+            session = SessionLocal()
+            try:
+                rows = (
+                    session.query(UserSteamChat.telegram_id, UserSteamChat.steam_id)
+                    .filter(UserSteamChat.steam_id.isnot(None))
+                    .all()
+                )
+                result = []
+                for telegram_id, steam_id in rows:
+                    try:
+                        steam32_id = int(convert_steamid_64_to_32(steam_id))
+                        tg_id = int(telegram_id)
+                    except (TypeError, ValueError):
+                        continue
+                    result.append({"user_id": tg_id, "steam32_id": steam32_id})
+                return result
+            finally:
+                session.close()
+
+        return await asyncio.to_thread(_query)
 
     async def get_all_chat_members(self):
-        # This should query the existing Telegram DB
-        # Example return format: [{'chat_id': -1001, 'user_id': 123, 'display_name': 'User One'}]
-        return []
+        def _query():
+            session = SessionLocal()
+            try:
+                rows = (
+                    session.query(
+                        UserSteamChat.chat_id,
+                        UserSteamChat.telegram_id,
+                        User.username,
+                        User.first_name,
+                        User.last_name,
+                    )
+                    .outerjoin(User, UserSteamChat.telegram_id == User.telegram_id)
+                    .all()
+                )
+                members = []
+                for chat_id, telegram_id, username, first_name, last_name in rows:
+                    try:
+                        chat_int = int(chat_id)
+                        user_int = int(telegram_id)
+                    except (TypeError, ValueError):
+                        continue
+
+                    display_name = (
+                        username
+                        or " ".join(filter(None, [first_name, last_name])).strip()
+                        or str(user_int)
+                    )
+                    members.append(
+                        {"chat_id": chat_int, "user_id": user_int, "display_name": display_name}
+                    )
+                return members
+            finally:
+                session.close()
+
+        return await asyncio.to_thread(_query)
