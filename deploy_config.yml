@@ -2,7 +2,7 @@
 
 # Server details
 server:
-  host: 192.168.88.200
+  host: 192.168.88.31
   access: ssh
   project_path: ~/Projects/hwga-bot
   service_name: hwga-bot.service
