@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 DEV_MODE = os.environ.get("BOT_ENV", "dev") == "dev"
 DEV_HOST = "0.0.0.0"
 DEV_PORT = 8081
-PROD_HOST = os.environ.get("PROD_HOST", socket.gethostbyname(socket.gethostname()))
+PROD_HOST = os.environ.get("PROD_HOST", "0.0.0.0")
 PROD_PORT = int(os.environ.get("PROD_PORT", 8081))
 
 HOST = DEV_HOST if DEV_MODE else PROD_HOST
